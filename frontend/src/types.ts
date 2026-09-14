@@ -47,6 +47,7 @@ export interface GlobalOptions {
   preset_style: 'anime' | 'cinema' | 'fast'
   is_custom_emoji: boolean
   same_dir: boolean
+  pack_output: boolean
   custom_output_dir: string
 }
 
@@ -120,6 +121,7 @@ declare global {
     onTaskProgress?: (taskId: number, p: number, msg: string) => void
     onTaskFinished?: (taskId: number, success: boolean, msg: string, outPath: string, size: number) => void
     onAllCompleted?: () => void
+    onPackFinished?: (success: boolean, zipPath: string, count: number) => void
     onAiItemStarted?: (taskId: number, fileName: string) => void
     onAiItemFinished?: (taskId: number, emoji: string) => void
     onAiItemError?: (taskId: number, err: string) => void

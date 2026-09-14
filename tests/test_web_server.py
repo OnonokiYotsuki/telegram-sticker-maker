@@ -215,7 +215,7 @@ def test_conversion_runs_two_at_a_time(monkeypatch, tmp_path):
         }
         for i in range(4)
     ]
-    api._run_conversion_worker(tasks, {})
+    api._run_conversion_worker(tasks, {"pack_output": False})
     assert max_seen == 2
     assert all(os.path.isfile(t["output_path"]) for t in tasks)
 

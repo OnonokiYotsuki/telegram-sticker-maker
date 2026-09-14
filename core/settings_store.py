@@ -16,6 +16,7 @@ def default_settings() -> Dict[str, Any]:
         "optimize_fps": True,
         "is_custom_emoji": False,
         "same_dir": False,
+        "pack_output": True,
         "custom_output_dir": default_output_dir(),
         "use_emoji_naming": True,
         "zero_pad": True,
@@ -95,6 +96,9 @@ def load_settings() -> Dict[str, Any]:
         "same_dir": _as_bool(
             _get(parser, "settings", "same_dir") or _get(parser, "General", "same_dir", "false"),
             defaults["same_dir"],
+        ),
+        "pack_output": _as_bool(
+            _get(parser, "settings", "pack_output", "true"), defaults["pack_output"]
         ),
         "custom_output_dir": str(custom_out),
         "use_emoji_naming": _as_bool(

@@ -1,11 +1,13 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import urllib.parse
 
 import webview
@@ -14,7 +16,8 @@ from core import __version__
 from core.ai_tagger import AIEmojiConfig, AIEmojiTagger
 from core.analyzer import MediaAnalyzer
 from core.encoder import EncodeOptions, StickerEncoder
-from core.settings_store import default_settings
+from core.pack_output import PackEntry, PackError, default_zip_name, pack_stickers, unique_arcname
+from core.settings_store import default_output_dir, default_settings
 from core.settings_store import load_settings as load_app_settings
 from core.settings_store import save_settings as save_app_settings
 from server.stream_server import get_stream_server
@@ -112,7 +115,7 @@ class AppAPI:
         if not folder_path:
             return
         abs_path = os.path.abspath(folder_path)
-        if os.path.isfile(abs_path):
+        if not os.path.isdir(abs_path):
             abs_path = os.path.dirname(abs_path)
         if not os.path.exists(abs_path):
             try:
@@ -212,33 +215,154 @@ class AppAPI:
         threading.Thread(target=self._run_conversion_worker, args=(tasks, global_options), daemon=True).start()
         return {"status": "started"}
 
+    def pack_outputs(
+        self,
+        files: List[Dict[str, Any]],
+        zip_dir: str = "",
+        zip_path: str = "",
+        prompt: bool = False,
+        is_custom_emoji: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        try:
+            dest = self._resolve_zip_path(zip_dir=zip_dir, zip_path=zip_path, prompt=prompt)
+            entries = [
+                PackEntry(
+                    path=str(item.get("path") or ""),
+                    emoji=str(item.get("emoji") or ""),
+                    arcname=str(item.get("arcname") or ""),
+                )
+                for item in files
+            ]
+            result = pack_stickers(entries, dest)
+            self._log(f"📦 已打包 {result['count']} 个贴纸 -> {result['path']}")
+            self._emit("onPackFinished", True, result["path"], result["count"])
+            return {"status": "ok", **result}
+        except PackError as e:
+            self._log(f"⚠️ 打包跳过: {e}")
+            self._emit("onPackFinished", False, "", 0)
+            return {"status": "empty", "error": str(e)}
+        except Exception as e:
+            self._log(f"❌ 打包失败: {e}")
+            self._emit("onPackFinished", False, "", 0)
+            return {"status": "error", "error": str(e)}
+
+    def _resolve_zip_path(self, zip_dir: str = "", zip_path: str = "", prompt: bool = False) -> str:
+        if zip_path:
+            dest = os.path.abspath(zip_path)
+            if not dest.lower().endswith(".zip"):
+                dest += ".zip"
+            return dest
+        if prompt and webview.windows:
+            suggested_dir = zip_dir or default_output_dir()
+            result = None
+            try:
+                os.makedirs(suggested_dir, exist_ok=True)
+                result = webview.windows[0].create_file_dialog(
+                    _file_dialog_type("SAVE"),
+                    directory=suggested_dir,
+                    save_filename=default_zip_name(),
+                    file_types=("ZIP 压缩包 (*.zip)",),
+                )
+            except Exception:
+                result = None
+            if result:
+                chosen = result[0] if isinstance(result, (list, tuple)) else str(result)
+                if chosen:
+                    dest = os.path.abspath(chosen)
+                    if not dest.lower().endswith(".zip"):
+                        dest += ".zip"
+                    return dest
+            raise PackError("已取消打包")
+        dest_dir = (zip_dir or "").strip() or default_output_dir()
+        os.makedirs(dest_dir, exist_ok=True)
+        return os.path.join(os.path.abspath(dest_dir), default_zip_name())
+
+    def _pack_zip_dir(self, global_options: Dict[str, Any]) -> str:
+        custom = str(global_options.get("custom_output_dir") or "").strip()
+        if custom:
+            return custom
+        return default_output_dir()
+
+    def _stage_pack_tasks(self, tasks: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
+        staging = tempfile.mkdtemp(prefix="tg_stickers_")
+        used: set[str] = set()
+        staged: List[Dict[str, Any]] = []
+        for task in tasks:
+            item = dict(task)
+            final_path = str(item.get("output_path") or "")
+            item["final_output_path"] = final_path
+            name = unique_arcname(os.path.basename(final_path) or "sticker.webm", used)
+            item["output_path"] = os.path.join(staging, name)
+            staged.append(item)
+        return staging, staged
+
+    def _copy_pack_fallback(self, successes: List[Dict[str, Any]]) -> None:
+        for item in successes:
+            src = item.get("path") or ""
+            dest = item.get("final_path") or ""
+            if not src or not dest or not os.path.isfile(src):
+                continue
+            os.makedirs(os.path.dirname(os.path.abspath(dest)), exist_ok=True)
+            shutil.copy2(src, dest)
+
     def _log(self, message: str):
         self._emit("onLog", message)
 
     def _run_conversion_worker(self, tasks: List[Dict[str, Any]], global_options: Dict[str, Any]):
         self._log(f">>> 开始执行 {len(tasks)} 个转换任务（最多 {self.CONVERT_WORKERS} 路并行）...")
-        futures = [
-            self._executor.submit(self._convert_one, task, global_options)
-            for task in tasks
-        ]
-        wait(futures)
-        for fut in futures:
-            exc = fut.exception()
-            if exc is not None:
-                self._log(f"❌ 转换线程异常: {exc}")
-        if self._canceled:
-            self._log(">>> 批量转换已取消。")
+        pack_output = bool(global_options.get("pack_output", True))
+        staging = None
+        work_tasks = tasks
+        try:
+            if pack_output:
+                staging, work_tasks = self._stage_pack_tasks(tasks)
+            futures = [
+                self._executor.submit(self._convert_one, task, global_options)
+                for task in work_tasks
+            ]
+            wait(futures)
+            successes: List[Dict[str, Any]] = []
+            for fut in futures:
+                try:
+                    item = fut.result()
+                    if item:
+                        successes.append(item)
+                except Exception as exc:
+                    self._log(f"❌ 转换线程异常: {exc}")
+            if self._canceled:
+                self._log(">>> 批量转换已取消。")
+            if pack_output and successes:
+                try:
+                    dest = self._resolve_zip_path(zip_dir=self._pack_zip_dir(global_options))
+                    result = pack_stickers(
+                        [
+                            PackEntry(path=item["path"], emoji=item.get("emoji") or "")
+                            for item in successes
+                        ],
+                        dest,
+                    )
+                    self._log(f"📦 已打包 {result['count']} 个贴纸 -> {result['path']}")
+                    self._emit("onPackFinished", True, result["path"], result["count"])
+                except Exception as e:
+                    self._log(f"❌ 打包失败，改为输出散文件: {e}")
+                    self._copy_pack_fallback(successes)
+                    self._emit("onPackFinished", False, "", 0)
+        finally:
+            if staging:
+                shutil.rmtree(staging, ignore_errors=True)
         self._log(">>> 所有转换任务已结束。")
         self._emit("onAllCompleted")
 
-    def _convert_one(self, task: Dict[str, Any], global_options: Dict[str, Any]) -> None:
+    def _convert_one(self, task: Dict[str, Any], global_options: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         task_id = task.get("task_id", 0)
         in_path = task.get("input_path", "")
         out_path = task.get("output_path", "")
+        display_path = str(task.get("final_output_path") or out_path)
+        emoji = str(task.get("emoji") or "")
 
         if self._canceled:
             self._emit("onTaskFinished", task_id, False, "已取消", "", 0)
-            return
+            return None
 
         preset_style = global_options.get("preset_style", "anime")
         spoof_duration = global_options.get("spoof_duration", True)
@@ -284,17 +408,20 @@ class AppAPI:
                 sz = os.path.getsize(out_path)
                 msg = "转换成功"
                 self._log(f"✅ [{os.path.basename(in_path)}] 转换成功 ({sz/1024:.1f} KB)")
-                self._emit("onTaskFinished", task_id, True, msg, out_path, sz)
-            else:
-                msg = "转码未生成有效文件"
-                self._log(f"❌ [{os.path.basename(in_path)}] 失败: {msg}")
-                self._emit("onTaskFinished", task_id, False, msg, "", 0)
+                self._emit("onTaskFinished", task_id, True, msg, display_path, sz)
+                return {"path": out_path, "emoji": emoji, "final_path": display_path}
+            msg = "转码未生成有效文件"
+            self._log(f"❌ [{os.path.basename(in_path)}] 失败: {msg}")
+            self._emit("onTaskFinished", task_id, False, msg, "", 0)
+            return None
         except InterruptedError:
             self._log(f"[{os.path.basename(in_path)}] 任务已取消。")
             self._emit("onTaskFinished", task_id, False, "已取消", "", 0)
+            return None
         except Exception as e:
             self._log(f"❌ [{os.path.basename(in_path)}] 报错: {str(e)}")
             self._emit("onTaskFinished", task_id, False, str(e), "", 0)
+            return None
 
     def ai_tag_all(self, tasks: List[Dict[str, Any]]):
         threading.Thread(target=self._run_ai_worker, args=(tasks,), daemon=True).start()

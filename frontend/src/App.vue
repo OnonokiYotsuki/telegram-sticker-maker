@@ -31,10 +31,12 @@ const globalOptions = ref<GlobalOptions>({
   preset_style: 'anime',
   is_custom_emoji: false,
   same_dir: false,
+  pack_output: true,
   custom_output_dir: '',
 })
 
 const isConverting = ref(false)
+const lastPackPath = ref('')
 const isAiTagging = ref(false)
 const isDraggingOver = ref(false)
 const showSettings = ref(false)
@@ -219,6 +221,10 @@ function setupIpcListeners() {
     appendLog('🎉 批量转换已全部完成！')
   }
 
+  window.onPackFinished = (success: boolean, zipPath: string, _count: number) => {
+    if (success && zipPath) lastPackPath.value = zipPath
+  }
+
   window.onAiItemStarted = (_taskId: number, fileName: string) => {
     appendLog(`[AI] 正在分析表情: ${fileName}...`)
   }
@@ -254,6 +260,7 @@ async function bootApi() {
       globalOptions.value.preset_style = settings.preset_style || 'anime'
       globalOptions.value.is_custom_emoji = settings.is_custom_emoji ?? false
       globalOptions.value.same_dir = settings.same_dir ?? false
+      globalOptions.value.pack_output = settings.pack_output ?? true
       globalOptions.value.custom_output_dir = settings.custom_output_dir || ''
     }
     appendLog('🚀 Telegram Sticker Maker 已准备就绪')
@@ -630,6 +637,10 @@ function openFolder(filePath: string) {
 }
 
 function handleOpenOutputFolder() {
+  if (lastPackPath.value) {
+    openFolder(lastPackPath.value)
+    return
+  }
   let target = ''
   if (globalOptions.value.same_dir) {
     if (tasks.value.length > 0 && tasks.value[0].outputPath) {
@@ -656,6 +667,7 @@ async function saveCurrentSettings() {
         optimize_fps: true,
         is_custom_emoji: globalOptions.value.is_custom_emoji,
         same_dir: globalOptions.value.same_dir,
+        pack_output: globalOptions.value.pack_output,
         custom_output_dir: globalOptions.value.custom_output_dir,
         use_emoji_naming: true,
         zero_pad: true,
@@ -715,6 +727,7 @@ async function startConversion() {
     task_id: t.taskId,
     input_path: t.inputPath,
     output_path: t.outputPath,
+    emoji: t.emoji || '',
     start_time: t.startTime,
     end_time: t.endTime,
     crop: t.crop,
@@ -1190,13 +1203,25 @@ async function triggerAiTagAll() {
 
         <!-- Right Bottom Action Buttons (Faithful to PySide6 MainWindow) -->
         <div class="space-y-2 pt-2 border-t border-[#252831] shrink-0">
-          <button
-            @click="startConversion"
-            :disabled="tasks.length === 0 || isConverting"
-            class="w-full py-2.5 rounded-lg bg-[#24a1de] hover:bg-[#2eb5f7] active:bg-[#1d89be] text-white text-xs font-bold flex items-center justify-center gap-2 shadow-lg shadow-[#24a1de]/20 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            🚀 开始转换
-          </button>
+          <div class="flex items-center gap-2">
+            <button
+              @click="startConversion"
+              :disabled="tasks.length === 0 || isConverting"
+              class="flex-1 py-2.5 rounded-lg bg-[#24a1de] hover:bg-[#2eb5f7] active:bg-[#1d89be] text-white text-xs font-bold flex items-center justify-center gap-2 shadow-lg shadow-[#24a1de]/20 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              🚀 开始转换
+            </button>
+            <label class="shrink-0 flex items-center gap-1.5 cursor-pointer select-none">
+              <input
+                v-model="globalOptions.pack_output"
+                type="checkbox"
+                :disabled="isConverting"
+                @change="saveCurrentSettings"
+                class="rounded bg-[#15171c] border-[#333844] text-[#24a1de] focus:ring-0 w-3.5 h-3.5 cursor-pointer"
+              />
+              <span class="text-gray-300 text-xs whitespace-nowrap">输出为压缩包</span>
+            </label>
+          </div>
 
           <button
             @click="cancelConversion"
