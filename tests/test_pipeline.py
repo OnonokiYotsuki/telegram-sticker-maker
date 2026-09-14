@@ -56,3 +56,51 @@ def test_cinema_preset(long_video, tmp_path):
     success = StickerEncoder.convert(long_video, output_path, options)
     assert success is True
     assert os.path.getsize(output_path) <= 256 * 1024
+
+
+def test_mkv_with_subtitles_and_audio_stripped(tmp_path):
+    # Create an MKV containing video, audio, and subtitle streams
+    mkv_path = str(tmp_path / "multi_track.mkv")
+    sub_path = str(tmp_path / "sub.srt")
+    with open(sub_path, "w", encoding="utf-8") as f:
+        f.write("1\n00:00:00,000 --> 00:00:03,000\nHello Telegram Sticker\n\n")
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "testsrc=duration=4:size=640x360:rate=24",
+        "-f", "lavfi", "-i", "sine=frequency=1000:duration=4",
+        "-i", sub_path,
+        "-c:v", "libx264",
+        "-c:a", "aac",
+        "-c:s", "srt",
+        "-metadata:s:s:0", "title=TestSub",
+        mkv_path,
+    ]
+    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+
+    out_webm = str(tmp_path / "clean.webm")
+    options = EncodeOptions(
+        preset_style="anime",
+        spoof_duration=True,
+        crop_to_3s=False,
+    )
+    success = StickerEncoder.convert(mkv_path, out_webm, options)
+    assert success is True
+    assert os.path.exists(out_webm)
+
+    # Probe output streams
+    probe_cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "stream=codec_type,codec_name",
+        "-show_entries", "format=nb_streams",
+        "-of", "json",
+        out_webm,
+    ]
+    import json
+    res = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+    probe = json.loads(res.stdout)
+    streams = probe.get("streams", [])
+    assert len(streams) == 1, f"Expected exactly 1 stream, got {len(streams)}"
+    assert streams[0]["codec_type"] == "video"
+    assert streams[0]["codec_name"] == "vp9"
+

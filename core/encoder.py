@@ -143,12 +143,21 @@ class StickerEncoder:
             if callback:
                 callback(0.4, "正在以无损模式编码 WebP...")
 
+            clean_extra = [
+                "-map", "0:v:0",
+                "-an",
+                "-sn",
+                "-dn",
+                "-map_chapters", "-1",
+                "-map_metadata", "-1",
+            ]
             cmd_lossless = [
                 ffmpeg, "-y", "-i", actual_input_path,
                 "-vf", scale_filter,
                 "-vcodec", "libwebp",
                 "-lossless", "1",
                 "-compression_level", "6",
+                *clean_extra,
                 output_path,
             ]
             res = run_hidden(cmd_lossless, text=True)
@@ -170,6 +179,7 @@ class StickerEncoder:
                     "-lossless", "0",
                     "-near_lossless", "40",
                     "-compression_level", "6",
+                    *clean_extra,
                     output_path,
                 ]
                 res_near = run_hidden(cmd_near, text=True)
@@ -191,6 +201,7 @@ class StickerEncoder:
                             "-lossless", "0",
                             "-quality", quality,
                             "-compression_level", "6",
+                            *clean_extra,
                             output_path,
                         ]
                         res_lossy = run_hidden(cmd_lossy, text=True)
@@ -273,7 +284,10 @@ class StickerEncoder:
             *pre_seek,
             "-i", input_path,
             *post_seek,
+            "-map", "0:v:0",
             "-an",
+            "-sn",
+            "-dn",
             "-vf", vf,
             "-pix_fmt", "gray",
             "-f", "rawvideo",
@@ -303,6 +317,7 @@ class StickerEncoder:
     @classmethod
     def _vp9_args(cls, plan: VideoEncodePlan) -> list[str]:
         args = [
+            "-map", "0:v:0",
             "-c:v", "libvpx-vp9",
             "-b:v", f"{plan.bitrate_kbps}k",
             "-aq-mode", "2",
@@ -317,6 +332,10 @@ class StickerEncoder:
             "-color_trc", "bt709",
             "-color_range", "tv",
             "-an",
+            "-sn",
+            "-dn",
+            "-map_chapters", "-1",
+            "-map_metadata", "-1",
         ]
         if plan.auto_alt_ref:
             args.extend([
