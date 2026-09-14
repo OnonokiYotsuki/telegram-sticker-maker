@@ -1,0 +1,39 @@
+[project]
+name = "telegram-sticker-maker"
+version = "0.1.0"
+description = "Telegram 贴纸批量转换工具 (Telegram Sticker Maker)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pillow>=10.0.0",
+    "pillow-heif>=0.16.0",
+    "pywebview>=5.0.0",
+    "pythonnet>=3.0.0; sys_platform == 'win32'",
+]
+
+[project.scripts]
+app = "main_web:main"
+app-web = "main_web:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["core", "server"]
+py-modules = ["main_web"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+]
+link-mode = "copy"
+
+[[tool.uv.index]]
+name = "aliyun"
+url = "https://mirrors.aliyun.com/pypi/simple"
+default = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
