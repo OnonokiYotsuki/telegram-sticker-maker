@@ -1,21 +1,63 @@
 """Bundle converted stickers into a ZIP."""
 from __future__ import annotations
 
+import json
 import os
+import re
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 
 STICKER_EXTS = {".webm", ".webp"}
+STICKERS_JSON_NAME = "stickers.json"
+MAX_KEYWORDS = 20
+MAX_KEYWORDS_CHARS = 64
+_KEYWORD_SPLIT_RE = re.compile(r"[,，、;；\s]+")
+
+
+def normalize_keywords(value: Any) -> tuple[str, ...]:
+    """Parse keywords from a string or sequence. Telegram allows 0-20, total 64 chars."""
+    if value is None:
+        parts: list[str] = []
+    elif isinstance(value, (list, tuple)):
+        parts = [str(item) for item in value]
+    else:
+        parts = _KEYWORD_SPLIT_RE.split(str(value))
+
+    out: list[str] = []
+    seen: set[str] = set()
+    total = 0
+    for raw in parts:
+        word = raw.strip()
+        if not word or word in seen:
+            continue
+        if len(out) >= MAX_KEYWORDS:
+            break
+        room = MAX_KEYWORDS_CHARS - total
+        if room <= 0:
+            break
+        if len(word) > room:
+            word = word[:room]
+            if not word or word in seen:
+                break
+        seen.add(word)
+        out.append(word)
+        total += len(word)
+    return tuple(out)
 
 
 @dataclass(frozen=True)
 class PackEntry:
     path: str
     emoji: str = ""
+    keywords: tuple[str, ...] = ()
     arcname: str = ""
+
+    def __post_init__(self):
+        object.__setattr__(self, "emoji", (self.emoji or "").strip())
+        object.__setattr__(self, "keywords", normalize_keywords(self.keywords))
 
 
 class PackError(ValueError):
@@ -44,7 +86,7 @@ def unique_arcname(name: str, used: set[str]) -> str:
 
 
 def resolve_entries(entries: Iterable[PackEntry]) -> list[PackEntry]:
-    used: set[str] = set()
+    used: set[str] = {STICKERS_JSON_NAME}
     resolved: list[PackEntry] = []
     for entry in entries:
         path = os.path.abspath(entry.path)
@@ -54,8 +96,28 @@ def resolve_entries(entries: Iterable[PackEntry]) -> list[PackEntry]:
         if ext not in STICKER_EXTS:
             continue
         arc = unique_arcname(entry.arcname or os.path.basename(path), used)
-        resolved.append(PackEntry(path=path, emoji=(entry.emoji or "").strip(), arcname=arc))
+        resolved.append(
+            PackEntry(
+                path=path,
+                emoji=(entry.emoji or "").strip(),
+                keywords=normalize_keywords(entry.keywords),
+                arcname=arc,
+            )
+        )
     return resolved
+
+
+def build_stickers_manifest(entries: Iterable[PackEntry]) -> dict:
+    stickers = []
+    for item in entries:
+        stickers.append(
+            {
+                "file": item.arcname,
+                "emoji": item.emoji or "",
+                "keywords": list(item.keywords),
+            }
+        )
+    return {"stickers": stickers}
 
 
 def pack_stickers(entries: Iterable[PackEntry], zip_path: str) -> dict:
@@ -66,13 +128,17 @@ def pack_stickers(entries: Iterable[PackEntry], zip_path: str) -> dict:
 
     zip_path = os.path.abspath(zip_path)
     os.makedirs(os.path.dirname(zip_path) or ".", exist_ok=True)
+    manifest = build_stickers_manifest(resolved)
+    payload = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
 
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
         for item in resolved:
             zf.write(item.path, arcname=item.arcname)
+        zf.writestr(STICKERS_JSON_NAME, payload)
 
     return {
         "path": zip_path,
         "count": len(resolved),
         "bytes": os.path.getsize(zip_path),
+        "manifest": STICKERS_JSON_NAME,
     }

@@ -16,7 +16,14 @@ from core import __version__
 from core.ai_tagger import AIEmojiConfig, AIEmojiTagger
 from core.analyzer import MediaAnalyzer
 from core.encoder import EncodeOptions, StickerEncoder
-from core.pack_output import PackEntry, PackError, default_zip_name, pack_stickers, unique_arcname
+from core.pack_output import (
+    PackEntry,
+    PackError,
+    default_zip_name,
+    normalize_keywords,
+    pack_stickers,
+    unique_arcname,
+)
 from core.settings_store import default_output_dir, default_settings
 from core.settings_store import load_settings as load_app_settings
 from core.settings_store import save_settings as save_app_settings
@@ -229,6 +236,7 @@ class AppAPI:
                 PackEntry(
                     path=str(item.get("path") or ""),
                     emoji=str(item.get("emoji") or ""),
+                    keywords=normalize_keywords(item.get("keywords")),
                     arcname=str(item.get("arcname") or ""),
                 )
                 for item in files
@@ -336,7 +344,11 @@ class AppAPI:
                     dest = self._resolve_zip_path(zip_dir=self._pack_zip_dir(global_options))
                     result = pack_stickers(
                         [
-                            PackEntry(path=item["path"], emoji=item.get("emoji") or "")
+                            PackEntry(
+                                path=item["path"],
+                                emoji=item.get("emoji") or "",
+                                keywords=normalize_keywords(item.get("keywords")),
+                            )
                             for item in successes
                         ],
                         dest,
@@ -359,6 +371,7 @@ class AppAPI:
         out_path = task.get("output_path", "")
         display_path = str(task.get("final_output_path") or out_path)
         emoji = str(task.get("emoji") or "")
+        keywords = normalize_keywords(task.get("keywords"))
 
         if self._canceled:
             self._emit("onTaskFinished", task_id, False, "已取消", "", 0)
@@ -409,7 +422,12 @@ class AppAPI:
                 msg = "转换成功"
                 self._log(f"✅ [{os.path.basename(in_path)}] 转换成功 ({sz/1024:.1f} KB)")
                 self._emit("onTaskFinished", task_id, True, msg, display_path, sz)
-                return {"path": out_path, "emoji": emoji, "final_path": display_path}
+                return {
+                    "path": out_path,
+                    "emoji": emoji,
+                    "keywords": keywords,
+                    "final_path": display_path,
+                }
             msg = "转码未生成有效文件"
             self._log(f"❌ [{os.path.basename(in_path)}] 失败: {msg}")
             self._emit("onTaskFinished", task_id, False, msg, "", 0)

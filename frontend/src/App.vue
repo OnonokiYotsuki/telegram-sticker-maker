@@ -13,8 +13,15 @@ import {
 import type { TaskItem, GlobalOptions, ClipItem } from './types'
 import { clampCropRadius, cropRadiusLabel } from './types'
 import { defaultClipEnd, formatOutputName } from './naming'
+import {
+  formatKeywords,
+  clampKeywordList,
+  parseKeywords,
+  keywordMeter,
+} from './keywords'
 import VideoClipModal from './components/VideoClipModal.vue'
 import SettingsModal from './components/SettingsModal.vue'
+import KeywordsModal from './components/KeywordsModal.vue'
 
 // --- State ---
 const tasks = ref<TaskItem[]>([])
@@ -45,6 +52,7 @@ const logs = ref<string[]>([])
 const logContainer = ref<HTMLElement | null>(null)
 const streamBaseUrl = ref('')
 const activeClipTask = ref<TaskItem | null>(null)
+const keywordsTask = ref<TaskItem | null>(null)
 
 let nextTaskId = 1
 
@@ -68,6 +76,29 @@ function commitEmojiEdit(task: TaskItem) {
   task.emoji = (task.emoji || '').trim()
   updateTaskOutputPath(task)
   editingEmojiTaskId.value = null
+}
+
+function openKeywordsModal(task: TaskItem) {
+  if (isConverting.value) return
+  keywordsTask.value = task
+}
+
+function saveKeywords(value: string) {
+  if (keywordsTask.value) {
+    keywordsTask.value.keywords = value
+  }
+  keywordsTask.value = null
+}
+
+function keywordsPreview(raw: string): string {
+  const words = clampKeywordList(parseKeywords(raw))
+  if (words.length === 0) return ''
+  if (words.length === 1) return words[0]
+  return `${words[0]} +${words.length - 1}`
+}
+
+function keywordCount(raw: string): number {
+  return keywordMeter(raw).count
 }
 
 // Context Menu State
@@ -140,6 +171,13 @@ watch(
 
 // --- API & IPC Setup ---
 function onKeyDown(e: KeyboardEvent) {
+  if (keywordsTask.value) {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      keywordsTask.value = null
+    }
+    return
+  }
   const target = e.target as HTMLElement
   const isEditing = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
   if (isEditing) return
@@ -305,6 +343,7 @@ async function addFilesFromPaths(paths: string[]) {
         outputPath: '',
         mediaInfo: info,
         emoji: '',
+        keywords: '',
         index: idx,
         status: 'waiting',
         progress: 0,
@@ -373,6 +412,7 @@ async function handleToolbarClipVideo() {
           outputPath: '',
           mediaInfo: info,
           emoji: '',
+          keywords: '',
           index: tasks.value.length + 1,
           status: 'waiting',
           progress: 0,
@@ -576,6 +616,7 @@ function handleClipsGenerated(clips: ClipItem[]) {
     baseTask.crop = c.crop
     baseTask.cropRadius = c.cropRadius
     baseTask.emoji = c.emoji || baseTask.emoji
+    if (c.keywords != null) baseTask.keywords = c.keywords
     updateTaskOutputPath(baseTask)
     appendLog(`[${baseTask.mediaInfo.file_name}] 已更新截取与裁切参数`)
   } else {
@@ -589,6 +630,7 @@ function handleClipsGenerated(clips: ClipItem[]) {
         outputPath: '',
         mediaInfo: baseTask.mediaInfo,
         emoji: c.emoji || baseTask.emoji,
+        keywords: c.keywords ?? baseTask.keywords ?? '',
         index: baseTask.index + i,
         clipLabel: `[${c.startTime.toFixed(3)}s - ${c.endTime.toFixed(3)}s]`,
         startTime: c.startTime,
@@ -720,6 +762,12 @@ async function aiTagSingle(task: TaskItem) {
 // --- Conversion Controls ---
 async function startConversion() {
   if (tasks.value.length === 0) return
+  if (!globalOptions.value.pack_output) {
+    const ok = window.confirm(
+      '未勾选「输出为压缩包」。贴纸 keywords 只会写入压缩包内的 stickers.json，散文件导出不会包含该映射。是否继续转换？'
+    )
+    if (!ok) return
+  }
   updateAllTasksOutputPaths()
   isConverting.value = true
 
@@ -728,6 +776,7 @@ async function startConversion() {
     input_path: t.inputPath,
     output_path: t.outputPath,
     emoji: t.emoji || '',
+    keywords: formatKeywords(clampKeywordList(parseKeywords(t.keywords))),
     start_time: t.startTime,
     end_time: t.endTime,
     crop: t.crop,
@@ -932,6 +981,7 @@ async function triggerAiTagAll() {
                     <th class="py-2.5 px-3">原文件名</th>
                     <th class="py-2.5 px-3 w-48 text-center">原规格</th>
                     <th class="py-2.5 px-3 w-56">目标文件名</th>
+                    <th class="py-2.5 px-3 w-36">关键词</th>
                     <th class="py-2.5 px-3 w-44">进度与状态</th>
                     <th class="py-2.5 px-3 w-20 text-center">体积</th>
                     <th class="py-2.5 px-3 w-24 text-right">操作</th>
@@ -1034,7 +1084,31 @@ async function triggerAiTagAll() {
                       </div>
                     </td>
 
-                    <!-- 5. 进度与状态 -->
+                    <!-- 5. 关键词（按钮打开弹窗） -->
+                    <td class="py-2 px-3">
+                      <button
+                        type="button"
+                        :disabled="isConverting"
+                        class="w-full flex items-center justify-between gap-1.5 bg-[#171a21] border border-[#2d323e] hover:border-[#24a1de] px-2 py-1 rounded-md text-xs text-left cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                        :title="task.keywords || '设置关键词（写入压缩包 stickers.json）'"
+                        @click.stop="openKeywordsModal(task)"
+                      >
+                        <span
+                          class="truncate"
+                          :class="keywordCount(task.keywords) ? 'text-gray-200' : 'text-gray-500'"
+                        >
+                          {{ keywordsPreview(task.keywords) || '+ 设置关键词' }}
+                        </span>
+                        <span
+                          v-if="keywordCount(task.keywords)"
+                          class="shrink-0 font-mono text-[10px] text-gray-500"
+                        >
+                          {{ keywordCount(task.keywords) }}
+                        </span>
+                      </button>
+                    </td>
+
+                    <!-- 6. 进度与状态 -->
                     <td class="py-2 px-3">
                       <div class="space-y-1">
                         <div class="w-full h-2 bg-[#20232b] rounded-full overflow-hidden">
@@ -1211,7 +1285,7 @@ async function triggerAiTagAll() {
             >
               🚀 开始转换
             </button>
-            <label class="shrink-0 flex items-center gap-1.5 cursor-pointer select-none">
+            <label class="shrink-0 flex items-center gap-1.5 cursor-pointer select-none" title="压缩包内额外写入 stickers.json，对应每个贴纸的 emoji 与 keywords">
               <input
                 v-model="globalOptions.pack_output"
                 type="checkbox"
@@ -1222,6 +1296,9 @@ async function triggerAiTagAll() {
               <span class="text-gray-300 text-xs whitespace-nowrap">输出为压缩包</span>
             </label>
           </div>
+          <p class="text-[10px] text-gray-500 leading-snug">
+            keywords 仅随压缩包写入 <span class="font-mono text-gray-400">stickers.json</span>
+          </p>
 
           <button
             @click="cancelConversion"
@@ -1345,6 +1422,13 @@ async function triggerAiTagAll() {
         </button>
 
         <button
+          @click="openKeywordsModal(contextMenu.task!); contextMenu.visible = false"
+          class="w-full text-left px-3 py-2 rounded-lg hover:bg-[#24a1de] hover:text-white flex items-center gap-2 transition cursor-pointer"
+        >
+          🏷️ 编辑关键词
+        </button>
+
+        <button
           v-if="contextMenu.task.status === 'success'"
           @click="openFolder(contextMenu.task!.outputPath); contextMenu.visible = false"
           class="w-full text-left px-3 py-2 rounded-lg hover:bg-[#24a1de] hover:text-white flex items-center gap-2 transition cursor-pointer"
@@ -1399,6 +1483,15 @@ async function triggerAiTagAll() {
     <SettingsModal
       v-model="showSettings"
       @saved="initPywebview"
+    />
+
+    <KeywordsModal
+      v-if="keywordsTask"
+      :keywords="keywordsTask.keywords"
+      :file-name="keywordsTask.mediaInfo.file_name"
+      :emoji="keywordsTask.emoji"
+      @close="keywordsTask = null"
+      @save="saveKeywords"
     />
   </div>
 </template>

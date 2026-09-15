@@ -31,6 +31,7 @@ export interface TaskItem {
   outputPath: string
   mediaInfo: MediaInfo
   emoji: string
+  keywords: string
   index: number
   clipLabel?: string
   startTime?: number
@@ -99,6 +100,7 @@ export interface ClipItem {
   endTime: number
   duration: number
   emoji: string
+  keywords?: string
   crop?: [number, number, number, number]
   cropRadius?: number
 }
