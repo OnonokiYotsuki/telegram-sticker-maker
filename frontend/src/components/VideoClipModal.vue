@@ -169,18 +169,6 @@
                   🏁
                 </button>
 
-                <!-- Loop Preview -->
-                <button
-                  @click="toggleLoopPreview"
-                  :class="[
-                    'px-3 py-1 rounded font-semibold transition',
-                    isLooping ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'btn-subtle'
-                  ]"
-                  title="循环试看当前选中的片段"
-                >
-                  🔁 循环试看
-                </button>
-
                 <!-- Crop Toggle -->
                 <button
                   @click="toggleCrop"
@@ -332,10 +320,15 @@
               <div class="flex flex-col space-y-1">
                 <button
                   @click.stop="playClip(idx)"
-                  class="p-1 text-slate-400 hover:text-sky-400 hover:bg-slate-800 rounded text-xs"
-                  title="跳转播放此片段"
+                  :class="[
+                    'p-1 rounded text-xs',
+                    isLooping && selectedClipIdx === idx
+                      ? 'text-emerald-400 bg-emerald-950/50 hover:bg-emerald-900/50'
+                      : 'text-slate-400 hover:text-sky-400 hover:bg-slate-800'
+                  ]"
+                  :title="isLooping && selectedClipIdx === idx ? '停止循环播放' : '循环播放此片段'"
                 >
-                  ▶️
+                  {{ isLooping && selectedClipIdx === idx ? '⏸️' : '▶️' }}
                 </button>
                 <button
                   @click.stop="deleteClip(idx)"
@@ -587,12 +580,17 @@ const parseTime = (str: string): number | null => {
   return isNaN(val) ? null : val
 }
 
+const stopLooping = () => {
+  isLooping.value = false
+}
+
 const togglePlay = () => {
   if (!videoRef.value) return
   if (videoRef.value.paused) {
     videoRef.value.play()
   } else {
     videoRef.value.pause()
+    stopLooping()
   }
 }
 
@@ -645,11 +643,13 @@ const seekTo = (absolute: number) => {
 }
 
 const seekRelative = (delta: number) => {
+  stopLooping()
   const base = isReloading.value ? currentTime.value : playbackClock()
   seekTo(base + delta)
 }
 
 const onSliderInput = (e: Event) => {
+  stopLooping()
   seekTo(parseFloat((e.target as HTMLInputElement).value))
 }
 
@@ -684,18 +684,6 @@ const onCanPlay = () => {
 
 const onVideoError = () => {
   isReloading.value = false
-}
-
-const toggleLoopPreview = () => {
-  isLooping.value = !isLooping.value
-  if (isLooping.value && videoRef.value) {
-    const curClip = clips.value[selectedClipIdx.value]
-    if (curClip) {
-      pendingPlay.value = true
-      seekTo(curClip.startTime)
-      if (nativeRangeSeek.value) videoRef.value.play()
-    }
-  }
 }
 
 const toggleCrop = () => {
@@ -813,6 +801,11 @@ const selectClip = (idx: number) => {
 }
 
 const playClip = (idx: number) => {
+  if (isLooping.value && selectedClipIdx.value === idx && videoRef.value && !videoRef.value.paused) {
+    videoRef.value.pause()
+    stopLooping()
+    return
+  }
   pendingPlay.value = true
   isLooping.value = true
   selectClip(idx)
@@ -941,9 +934,6 @@ const onKeyDown = (e: KeyboardEvent) => {
   } else if (e.key === ']') {
     e.preventDefault()
     setCurrentAsEnd()
-  } else if (e.code === 'KeyP') {
-    e.preventDefault()
-    toggleLoopPreview()
   } else if (e.code === 'ArrowLeft') {
     e.preventDefault()
     seekRelative(e.shiftKey ? -largeStep.value : -smallStep.value)
