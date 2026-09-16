@@ -144,6 +144,8 @@ def test_export_prepared_zip_includes_manifest(tmp_path):
         assert STICKERS_JSON_NAME in names
         manifest = json.loads(zf.read(STICKERS_JSON_NAME))
         assert manifest["stickers"][0]["emoji"] == "🐱"
+        assert manifest["stickers"][0]["crop_radius"] == 0.0
+        assert manifest["stickers"][0]["shape"] == "直角"
 
 
 def test_export_prepared_stream_copy_clip(tmp_path):
@@ -297,6 +299,7 @@ def test_export_prepared_video_radius_keeps_alpha_and_manifest(tmp_path):
     assert info.has_alpha is True
     manifest = json.loads((dest / STICKERS_JSON_NAME).read_text(encoding="utf-8"))
     assert manifest["stickers"][0]["crop_radius"] == 1.0
+    assert manifest["stickers"][0]["shape"] == "圆形"
     imported = import_sticker_bundle(str(dest))
     assert imported["stickers"][0]["crop_radius"] == 1.0
     assert imported["stickers"][0]["input_path"].endswith("001.webm")

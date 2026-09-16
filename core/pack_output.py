@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable, Optional
 
+from core.crop_shape import crop_radius_label, normalize_crop_radius
+
 
 STICKER_EXTS = {".webm", ".webp"}
 STICKERS_JSON_NAME = "stickers.json"
@@ -59,13 +61,7 @@ class PackEntry:
     def __post_init__(self):
         object.__setattr__(self, "emoji", (self.emoji or "").strip())
         object.__setattr__(self, "keywords", normalize_keywords(self.keywords))
-        try:
-            radius = float(self.crop_radius)
-        except (TypeError, ValueError):
-            radius = 0.0
-        if radius != radius:
-            radius = 0.0
-        object.__setattr__(self, "crop_radius", max(0.0, min(1.0, radius)))
+        object.__setattr__(self, "crop_radius", normalize_crop_radius(self.crop_radius))
 
 
 class PackError(ValueError):
@@ -113,6 +109,7 @@ def resolve_entries(
                 emoji=(entry.emoji or "").strip(),
                 keywords=normalize_keywords(entry.keywords),
                 arcname=arc,
+                crop_radius=entry.crop_radius,
             )
         )
     return resolved
@@ -125,9 +122,9 @@ def build_stickers_manifest(entries: Iterable[PackEntry]) -> dict:
             "file": item.arcname,
             "emoji": item.emoji or "",
             "keywords": list(item.keywords),
+            "crop_radius": round(item.crop_radius, 4),
+            "shape": crop_radius_label(item.crop_radius),
         }
-        if item.crop_radius > 0.001:
-            row["crop_radius"] = round(item.crop_radius, 4)
         stickers.append(row)
     return {"stickers": stickers}
 

@@ -29,6 +29,15 @@ def radius_needs_alpha(value: RadiusValue) -> bool:
     return normalize_crop_radius(value) > RADIUS_EPS
 
 
+def crop_radius_label(value: RadiusValue) -> str:
+    radius = normalize_crop_radius(value)
+    if radius <= RADIUS_EPS:
+        return "直角"
+    if radius >= 1.0 - RADIUS_EPS:
+        return "圆形"
+    return f"圆角 {int(round(radius * 100))}%"
+
+
 def _esc_geq(expr: str) -> str:
     """Escape commas so a geq expression can live inside a -vf chain."""
     return expr.replace(",", "\\,")

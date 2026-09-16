@@ -56,8 +56,20 @@ def test_pack_stickers_only_contains_stickers(tmp_path):
         manifest = json.loads(zf.read(STICKERS_JSON_NAME).decode("utf-8"))
         assert manifest == {
             "stickers": [
-                {"file": "001_😂.webm", "emoji": "😂", "keywords": []},
-                {"file": "002.webp", "emoji": "🥺", "keywords": []},
+                {
+                    "file": "001_😂.webm",
+                    "emoji": "😂",
+                    "keywords": [],
+                    "crop_radius": 0.0,
+                    "shape": "直角",
+                },
+                {
+                    "file": "002.webp",
+                    "emoji": "🥺",
+                    "keywords": [],
+                    "crop_radius": 0.0,
+                    "shape": "直角",
+                },
             ]
         }
 
@@ -190,8 +202,20 @@ def test_pack_stickers_writes_keywords_json(tmp_path):
     with zipfile.ZipFile(zip_path) as zf:
         manifest = json.loads(zf.read(STICKERS_JSON_NAME).decode("utf-8"))
         assert manifest["stickers"] == [
-            {"file": "001_😂.webm", "emoji": "😂", "keywords": ["happy", "laugh"]},
-            {"file": "002.webp", "emoji": "🥺", "keywords": ["sad", "cry"]},
+            {
+                "file": "001_😂.webm",
+                "emoji": "😂",
+                "keywords": ["happy", "laugh"],
+                "crop_radius": 0.0,
+                "shape": "直角",
+            },
+            {
+                "file": "002.webp",
+                "emoji": "🥺",
+                "keywords": ["sad", "cry"],
+                "crop_radius": 0.0,
+                "shape": "直角",
+            },
         ]
 
 
@@ -226,5 +250,11 @@ def test_conversion_packs_keywords_json(monkeypatch, tmp_path):
     with zipfile.ZipFile(zips[0]) as zf:
         manifest = json.loads(zf.read(STICKERS_JSON_NAME).decode("utf-8"))
         assert manifest["stickers"] == [
-            {"file": "001_😂.webm", "emoji": "😂", "keywords": ["happy", "laugh"]}
+            {
+                "file": "001_😂.webm",
+                "emoji": "😂",
+                "keywords": ["happy", "laugh"],
+                "crop_radius": 0.0,
+                "shape": "直角",
+            }
         ]
