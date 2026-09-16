@@ -176,6 +176,13 @@ declare global {
     onPackFinished?: (success: boolean, zipPath: string, count: number) => void
     onExportProgress?: (done: number, total: number, msg: string) => void
     onExportFinished?: (success: boolean, path: string, count: number, error: string) => void
+    onImportProgress?: (done: number, total: number, msg: string) => void
+    onImportFinished?: (
+      success: boolean,
+      stickers: ImportedSticker[],
+      missing: string[],
+      error: string,
+    ) => void
     onAiItemStarted?: (taskId: number, fileName: string) => void
     onAiItemFinished?: (taskId: number, emoji: string) => void
     onAiItemError?: (taskId: number, err: string) => void

@@ -45,10 +45,15 @@ const proxyCacheHint = ref('')
 
 const isConverting = ref(false)
 const isExporting = ref(false)
+const isImporting = ref(false)
 const exportHint = ref('')
+const importHint = ref('')
+const importDone = ref(0)
+const importTotal = ref(0)
 const lastPackPath = ref('')
 const isAiTagging = ref(false)
-const isBusy = computed(() => isConverting.value || isExporting.value)
+const isBusy = computed(() => isConverting.value || isExporting.value || isImporting.value)
+let importCanceled = false
 const isDraggingOver = ref(false)
 const showSettings = ref(false)
 const showExportMenu = ref(false)
@@ -136,7 +141,28 @@ const taskCounts = computed(() => {
 
 const overallDone = computed(() => taskCounts.value.success + taskCounts.value.failed)
 
+const jobLabel = computed(() => {
+  if (isImporting.value) return '正在导入'
+  if (isExporting.value) return '正在导出'
+  if (isConverting.value) return '正在转码'
+  return ''
+})
+
+const jobDone = computed(() => (isImporting.value ? importDone.value : overallDone.value))
+
+const jobTotal = computed(() => (isImporting.value ? importTotal.value : taskCounts.value.total))
+
+const jobHint = computed(() => {
+  if (isImporting.value) return importHint.value
+  if (isExporting.value) return exportHint.value
+  return ''
+})
+
 const overallProgress = computed(() => {
+  if (isImporting.value) {
+    if (!importTotal.value) return 0
+    return Math.max(0, Math.min(100, Math.round((importDone.value / importTotal.value) * 100)))
+  }
   const total = tasks.value.length
   if (!total || !isBusy.value) return 0
   const sum = tasks.value.reduce((acc, t) => acc + (t.progress || 0), 0)
@@ -144,6 +170,10 @@ const overallProgress = computed(() => {
 })
 
 const statusSummaryText = computed(() => {
+  if (isImporting.value) {
+    const hint = importHint.value ? ` · ${importHint.value}` : ''
+    return `正在导入: ${importDone.value} 完成 / 共 ${importTotal.value} 项${hint}`
+  }
   if (isExporting.value) {
     const hint = exportHint.value ? ` · ${exportHint.value}` : ''
     return `正在导出: ${overallDone.value} 完成 / 共 ${taskCounts.value.total} 项${hint}`
@@ -314,6 +344,21 @@ function setupIpcListeners() {
     finishExportFromEvent(success, path, count, error)
   }
 
+  window.onImportProgress = (done: number, total: number, msg: string) => {
+    importDone.value = done
+    if (total > 0) importTotal.value = total
+    importHint.value = msg || ''
+  }
+
+  window.onImportFinished = (
+    success: boolean,
+    stickers: ImportedSticker[],
+    missing: string[],
+    error: string,
+  ) => {
+    void finishImportFromEvent(success, stickers, missing, error)
+  }
+
   window.onAiItemStarted = (_taskId: number, fileName: string) => {
     appendLog(`[AI] 正在分析表情: ${fileName}...`)
   }
@@ -391,11 +436,19 @@ function isImportFilePath(path: string): boolean {
 async function addImportedStickers(stickers: ImportedSticker[]) {
   const api = window.pywebview?.api
   if (!api?.analyze_file) return
-  for (const item of stickers) {
+  const total = stickers.length
+  importTotal.value = total
+  for (let i = 0; i < stickers.length; i++) {
+    if (importCanceled) break
+    const item = stickers[i]
+    const name = item.file_name || item.input_path.split(/[/\\]/).pop() || '文件'
+    importDone.value = i
+    importHint.value = `正在解析 ${name}`
     try {
       const info = await api.analyze_file(item.input_path)
       if (!info || info.error) {
-        appendLog(`❌ 导入解析失败: ${item.file_name || item.input_path} (${info?.error || '未知错误'})`)
+        appendLog(`❌ 导入解析失败: ${name} (${info?.error || '未知错误'})`)
+        importDone.value = i + 1
         continue
       }
       const task: TaskItem = {
@@ -421,8 +474,51 @@ async function addImportedStickers(stickers: ImportedSticker[]) {
       updateTaskOutputPath(task)
       tasks.value.push(task)
     } catch {
-      appendLog(`❌ 导入解析异常: ${item.file_name || item.input_path}`)
+      appendLog(`❌ 导入解析异常: ${name}`)
     }
+    importDone.value = i + 1
+  }
+}
+
+function resetImportState() {
+  isImporting.value = false
+  importHint.value = ''
+  importDone.value = 0
+  importTotal.value = 0
+}
+
+async function applyImportPayload(stickers: ImportedSticker[], missing: string[] = []) {
+  const before = tasks.value.length
+  await addImportedStickers(stickers)
+  const added = tasks.value.length - before
+  if (importCanceled) {
+    appendLog(added > 0 ? `已取消导入，已加入 ${added} 项` : '已取消导入')
+    return
+  }
+  appendLog(`📥 已导入 ${added} 项`)
+  if (missing.length > 0) {
+    appendLog(`⚠️ 有 ${missing.length} 个源文件缺失，已跳过`)
+  }
+}
+
+async function finishImportFromEvent(
+  success: boolean,
+  stickers: ImportedSticker[],
+  missing: string[],
+  error: string,
+) {
+  try {
+    if (success && stickers && stickers.length > 0) {
+      await applyImportPayload(stickers, missing || [])
+      return
+    }
+    if (error === '已取消导入') {
+      appendLog('已取消导入')
+      return
+    }
+    if (error) appendLog(`❌ 导入失败: ${error}`)
+  } finally {
+    resetImportState()
   }
 }
 
@@ -432,22 +528,27 @@ async function importFromPath(sourcePath = '') {
     appendLog('❌ 当前环境不支持导入列表')
     return
   }
+  importCanceled = false
+  isImporting.value = true
+  importHint.value = '准备导入...'
+  importDone.value = 0
+  importTotal.value = 0
   try {
     const res = await api.import_sticker_list(sourcePath)
-    if (res.status === 'ok' && res.stickers && res.stickers.length > 0) {
-      const before = tasks.value.length
-      await addImportedStickers(res.stickers)
-      const added = tasks.value.length - before
-      appendLog(`📥 已导入 ${added} 项`)
-      if (res.missing && res.missing.length > 0) {
-        appendLog(`⚠️ 有 ${res.missing.length} 个源文件缺失，已跳过`)
+    if (res.status === 'started') return
+    try {
+      if (res.status === 'ok' && res.stickers && res.stickers.length > 0) {
+        await applyImportPayload(res.stickers, res.missing || [])
+      } else if (res.status === 'empty' && res.error === '已取消导入') {
+        appendLog('已取消导入')
+      } else if (res.error) {
+        appendLog(`❌ 导入失败: ${res.error}`)
       }
-    } else if (res.status === 'empty' && res.error === '已取消导入') {
-      appendLog('已取消导入')
-    } else if (res.error) {
-      appendLog(`❌ 导入失败: ${res.error}`)
+    } finally {
+      resetImportState()
     }
   } catch (e) {
+    resetImportState()
     appendLog(`❌ 导入失败: ${e}`)
   }
 }
@@ -1058,6 +1159,7 @@ async function startConversion() {
 }
 
 async function cancelConversion() {
+  importCanceled = true
   if (window.pywebview?.api?.cancel_conversion) {
     await window.pywebview.api.cancel_conversion()
   }
@@ -1220,12 +1322,12 @@ async function triggerAiTagAll() {
       <div
         :class="[
           'rounded-md px-2.5 py-1 text-xs font-semibold border transition-all duration-200',
-          tasks.length === 0
+          tasks.length === 0 && !isBusy
             ? 'bg-[#1e222b] text-[#9ca3af] border-[#2d323e]'
             : 'bg-[#24a1de]/15 text-[#2eb5f7] border-[#24a1de]'
         ]"
       >
-        <span v-if="isBusy">{{ isExporting ? '正在导出' : '正在转码' }} {{ overallDone }} / {{ tasks.length }}</span>
+        <span v-if="isBusy">{{ jobLabel }} {{ jobDone }} / {{ jobTotal }}</span>
         <span v-else-if="selectedTaskIds.size > 0">已选 {{ selectedTaskIds.size }} / {{ tasks.length }} 项</span>
         <span v-else>已添加 {{ tasks.length }} 项</span>
       </div>
@@ -1267,7 +1369,7 @@ async function triggerAiTagAll() {
             class="px-3 py-1.5 rounded-lg bg-[#242730] hover:bg-[#2e333e] border border-[#333844] text-[#e5e7eb] text-xs font-medium flex items-center gap-1.5 transition active:scale-95 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             title="导入导出的 zip、JSON 或文件夹，还原裁切、片段与关键词"
           >
-            📥 导入
+            {{ isImporting ? '导入中...' : '📥 导入' }}
           </button>
 
           <button
@@ -1315,6 +1417,19 @@ async function triggerAiTagAll() {
             v-if="tasks.length === 0"
             class="flex-1 border-2 border-dashed border-[#282b35] hover:border-[#24a1de]/60 rounded-xl flex flex-col items-center justify-center p-8 gap-3 bg-[#16181d]/40 hover:bg-[#24a1de]/5 transition group"
           >
+            <template v-if="isImporting">
+              <span class="inline-block w-8 h-8 border-2 border-[#24a1de]/30 border-t-[#24a1de] rounded-full animate-spin motion-reduce:animate-none"></span>
+              <h3 class="text-base font-bold text-white">正在导入贴纸列表</h3>
+              <p class="text-xs text-[#9ca3af] max-w-sm text-center truncate">{{ importHint || '准备导入...' }}</p>
+              <div class="w-56 h-1.5 bg-[#20232b] rounded-full overflow-hidden">
+                <div
+                  class="h-full bg-[#24a1de] transition-all duration-150"
+                  :style="{ width: `${overallProgress}%` }"
+                ></div>
+              </div>
+              <p class="font-mono text-[11px] text-gray-500">{{ importDone }} / {{ importTotal }}</p>
+            </template>
+            <template v-else>
             <div class="text-5xl leading-none select-none">📥</div>
             <h3 class="text-base font-bold text-white">拖拽图片或视频到这里</h3>
             <p class="text-xs text-[#9ca3af]">支持多文件与文件夹拖拽，也可导入已导出的 zip / JSON</p>
@@ -1350,6 +1465,7 @@ async function triggerAiTagAll() {
                 {{ fmt }}
               </span>
             </div>
+            </template>
           </div>
 
           <!-- Task Table (Faithful to QTableWidget in Python) -->
@@ -1680,10 +1796,10 @@ async function triggerAiTagAll() {
             <div class="flex items-center justify-between gap-2 text-[11px]">
               <span class="flex items-center gap-1.5 text-[#2eb5f7] font-medium">
                 <span class="inline-block w-3 h-3 border-2 border-[#24a1de]/30 border-t-[#24a1de] rounded-full animate-spin motion-reduce:animate-none"></span>
-                {{ isExporting ? '正在导出' : '正在转码' }}
+                {{ jobLabel }}
               </span>
               <span class="font-mono text-gray-400 shrink-0">
-                {{ overallDone }} / {{ taskCounts.total }} · {{ overallProgress }}%
+                {{ jobDone }} / {{ jobTotal }} · {{ overallProgress }}%
               </span>
             </div>
             <div class="w-full h-1.5 bg-[#20232b] rounded-full overflow-hidden">
@@ -1692,7 +1808,7 @@ async function triggerAiTagAll() {
                 :style="{ width: `${overallProgress}%` }"
               ></div>
             </div>
-            <p class="text-[10px] text-gray-500 truncate">{{ exportHint || statusSummaryText }}</p>
+            <p class="text-[10px] text-gray-500 truncate">{{ jobHint || statusSummaryText }}</p>
           </div>
           <div class="flex items-center gap-2">
             <button

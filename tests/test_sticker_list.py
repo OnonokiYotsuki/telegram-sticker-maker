@@ -509,10 +509,18 @@ def test_api_import_sticker_list(tmp_path):
     dest = tmp_path / "bundle"
     write_sticker_bundle(str(dest), [{"input_path": str(src), "emoji": "🎉", "is_video": False}])
     api = AppAPI()
+    events = []
+    api._emit = lambda name, *args: events.append((name, args))
     res = api.import_sticker_list(str(dest))
     assert res["status"] == "ok"
     assert res["count"] == 1
     assert res["stickers"][0]["emoji"] == "🎉"
+    names = [e[0] for e in events]
+    assert "onImportProgress" in names
+    assert "onImportFinished" in names
+    done = [e for e in events if e[0] == "onImportFinished"][0]
+    assert done[1][0] is True
+    assert done[1][1][0]["emoji"] == "🎉"
 
 
 def test_import_skips_missing_and_rejects_empty(tmp_path):

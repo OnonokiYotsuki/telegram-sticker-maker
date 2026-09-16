@@ -155,18 +155,41 @@ class AppAPI:
             path = self.select_import_source()
             if not path:
                 return {"status": "empty", "error": "已取消导入"}
+        self._canceled = False
+        if webview.windows:
+            threading.Thread(target=self._run_import_worker, args=(path,), daemon=True).start()
+            return {"status": "started"}
+        return self._run_import_worker(path)
+
+    def _run_import_worker(self, path: str) -> Dict[str, Any]:
+        self._log(">>> 开始导入贴纸列表...")
+        self._emit("onImportProgress", 0, 1, "正在读取导出列表...")
         try:
+            if path.lower().endswith(".zip"):
+                self._emit("onImportProgress", 0, 1, "正在解压...")
             result = import_sticker_bundle(path)
-            self._log(f"📥 已解析导入列表：{result['count']} 项")
+            if self._canceled:
+                raise StickerListError("已取消导入")
             missing = result.get("missing") or []
+            self._log(f"📥 已解析导入列表：{result['count']} 项")
             if missing:
                 self._log(f"⚠️ 有 {len(missing)} 个源文件缺失，已跳过")
+            self._emit("onImportProgress", 0, int(result["count"] or 0), "正在加入任务列表...")
+            self._emit(
+                "onImportFinished",
+                True,
+                result.get("stickers") or [],
+                missing,
+                "",
+            )
             return {"status": "ok", **result}
         except StickerListError as e:
             self._log(f"⚠️ 导入跳过: {e}")
+            self._emit("onImportFinished", False, [], [], str(e))
             return {"status": "empty", "error": str(e)}
         except Exception as e:
             self._log(f"❌ 导入失败: {e}")
+            self._emit("onImportFinished", False, [], [], str(e))
             return {"status": "error", "error": str(e)}
 
     def open_folder(self, folder_path: str):
