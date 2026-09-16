@@ -115,9 +115,33 @@ export interface AppAPI {
     missing?: string[]
     error?: string
   }>
+  detect_import_source: (path: string) => Promise<{ status: string; found: boolean }>
+  import_sticker_list: (source_path?: string) => Promise<{
+    status: string
+    mode?: string
+    count?: number
+    stickers?: ImportedSticker[]
+    missing?: string[]
+    error?: string
+  }>
   cancel_conversion: () => Promise<void>
   ai_tag_single: (task_id: number, input_path: string, start_time?: number, end_time?: number) => Promise<{ status: string }>
   ai_tag_all: (tasks: Record<string, unknown>[]) => Promise<{ status: string }>
+}
+
+export interface ImportedSticker {
+  input_path: string
+  file_name?: string
+  emoji?: string
+  keywords?: string
+  is_video?: boolean
+  start_time?: number
+  end_time?: number
+  crop?: [number, number, number, number]
+  crop_radius?: number
+  clip_group_id?: string
+  clip_id?: string
+  clip_label?: string
 }
 
 export interface ClipItem {

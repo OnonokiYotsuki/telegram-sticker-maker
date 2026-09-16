@@ -29,6 +29,8 @@ from core.sticker_list import (
     default_bundle_name,
     default_bundle_zip_name,
     export_prepared_stickers,
+    import_sticker_bundle,
+    looks_like_import_path,
     write_sticker_bundle,
 )
 from core.settings_store import default_output_dir, default_settings
@@ -125,6 +127,47 @@ class AppAPI:
         if not result:
             return ""
         return result[0] if isinstance(result, (list, tuple)) else str(result)
+
+    def select_import_source(self) -> str:
+        if not webview.windows:
+            return ""
+        result = webview.windows[0].create_file_dialog(
+            _file_dialog_type("OPEN"),
+            allow_multiple=False,
+            file_types=(
+                "贴纸导出 (*.zip;*.json)",
+                "ZIP 压缩包 (*.zip)",
+                "JSON 列表 (*.json)",
+                "All Files (*.*)",
+            ),
+        )
+        if not result:
+            return ""
+        chosen = result[0] if isinstance(result, (list, tuple)) else str(result)
+        return str(chosen or "")
+
+    def detect_import_source(self, path: str) -> Dict[str, Any]:
+        return {"status": "ok", "found": looks_like_import_path(path)}
+
+    def import_sticker_list(self, source_path: str = "") -> Dict[str, Any]:
+        path = (source_path or "").strip()
+        if not path:
+            path = self.select_import_source()
+            if not path:
+                return {"status": "empty", "error": "已取消导入"}
+        try:
+            result = import_sticker_bundle(path)
+            self._log(f"📥 已解析导入列表：{result['count']} 项")
+            missing = result.get("missing") or []
+            if missing:
+                self._log(f"⚠️ 有 {len(missing)} 个源文件缺失，已跳过")
+            return {"status": "ok", **result}
+        except StickerListError as e:
+            self._log(f"⚠️ 导入跳过: {e}")
+            return {"status": "empty", "error": str(e)}
+        except Exception as e:
+            self._log(f"❌ 导入失败: {e}")
+            return {"status": "error", "error": str(e)}
 
     def open_folder(self, folder_path: str):
         if not folder_path:

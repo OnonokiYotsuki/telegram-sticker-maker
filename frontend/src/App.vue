@@ -10,7 +10,7 @@ import {
   Film,
   Image as ImageIcon,
 } from 'lucide-vue-next'
-import type { TaskItem, GlobalOptions, ClipItem } from './types'
+import type { TaskItem, GlobalOptions, ClipItem, ImportedSticker } from './types'
 import { clampCropRadius, cropRadiusLabel } from './types'
 import { defaultClipEnd, formatOutputName } from './naming'
 import {
@@ -383,12 +383,96 @@ function initPywebview() {
   window.setTimeout(() => window.clearInterval(poll), 15000)
 }
 
+function isImportFilePath(path: string): boolean {
+  const lower = path.toLowerCase()
+  return lower.endsWith('.zip') || lower.endsWith('.json')
+}
+
+async function addImportedStickers(stickers: ImportedSticker[]) {
+  const api = window.pywebview?.api
+  if (!api?.analyze_file) return
+  for (const item of stickers) {
+    try {
+      const info = await api.analyze_file(item.input_path)
+      if (!info || info.error) {
+        appendLog(`❌ 导入解析失败: ${item.file_name || item.input_path} (${info?.error || '未知错误'})`)
+        continue
+      }
+      const task: TaskItem = {
+        taskId: nextTaskId++,
+        inputPath: item.input_path,
+        outputPath: '',
+        mediaInfo: info,
+        emoji: item.emoji || '',
+        keywords: item.keywords || '',
+        index: tasks.value.length + 1,
+        status: 'waiting',
+        progress: 0,
+        statusMsg: '等待转换',
+        outputSize: 0,
+        startTime: item.start_time != null ? item.start_time : info.is_video ? 0 : undefined,
+        endTime: item.end_time != null ? item.end_time : info.is_video ? defaultClipEnd(info.duration) : undefined,
+        crop: item.crop,
+        cropRadius: item.crop_radius,
+        clipGroupId: item.clip_group_id,
+        clipId: item.clip_id,
+        clipLabel: item.clip_label,
+      }
+      updateTaskOutputPath(task)
+      tasks.value.push(task)
+    } catch {
+      appendLog(`❌ 导入解析异常: ${item.file_name || item.input_path}`)
+    }
+  }
+}
+
+async function importFromPath(sourcePath = '') {
+  const api = window.pywebview?.api
+  if (!api?.import_sticker_list) {
+    appendLog('❌ 当前环境不支持导入列表')
+    return
+  }
+  try {
+    const res = await api.import_sticker_list(sourcePath)
+    if (res.status === 'ok' && res.stickers && res.stickers.length > 0) {
+      const before = tasks.value.length
+      await addImportedStickers(res.stickers)
+      const added = tasks.value.length - before
+      appendLog(`📥 已导入 ${added} 项`)
+      if (res.missing && res.missing.length > 0) {
+        appendLog(`⚠️ 有 ${res.missing.length} 个源文件缺失，已跳过`)
+      }
+    } else if (res.status === 'empty' && res.error === '已取消导入') {
+      appendLog('已取消导入')
+    } else if (res.error) {
+      appendLog(`❌ 导入失败: ${res.error}`)
+    }
+  } catch (e) {
+    appendLog(`❌ 导入失败: ${e}`)
+  }
+}
+
+async function handleImport() {
+  if (isBusy.value) return
+  await importFromPath('')
+}
+
 // --- Add Files ---
 async function addFilesFromPaths(paths: string[]) {
   if (!paths || paths.length === 0) return
-  appendLog(`正在解析 ${paths.length} 个文件...`)
-
+  const imports: string[] = []
+  const media: string[] = []
   for (const p of paths) {
+    if (isImportFilePath(p)) imports.push(p)
+    else media.push(p)
+  }
+  for (const p of imports) {
+    await importFromPath(p)
+  }
+  if (media.length === 0) return
+  appendLog(`正在解析 ${media.length} 个文件...`)
+
+  for (const p of media) {
     try {
       const info = await window.pywebview?.api?.analyze_file(p)
       if (!info || info.error) {
@@ -433,6 +517,17 @@ async function handleSelectDirectory() {
   if (window.pywebview?.api?.select_directory) {
     const dir = await window.pywebview.api.select_directory()
     if (dir) {
+      if (window.pywebview.api.detect_import_source) {
+        try {
+          const peek = await window.pywebview.api.detect_import_source(dir)
+          if (peek.found) {
+            await importFromPath(dir)
+            return
+          }
+        } catch {
+          // fall through to media scan
+        }
+      }
       appendLog(`扫描文件夹: ${dir}`)
       const files = await window.pywebview.api.scan_directory(dir)
       if (files && files.length > 0) {
@@ -1167,6 +1262,15 @@ async function triggerAiTagAll() {
           </button>
 
           <button
+            @click="handleImport"
+            :disabled="isBusy"
+            class="px-3 py-1.5 rounded-lg bg-[#242730] hover:bg-[#2e333e] border border-[#333844] text-[#e5e7eb] text-xs font-medium flex items-center gap-1.5 transition active:scale-95 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            title="导入导出的 zip、JSON 或文件夹，还原裁切、片段与关键词"
+          >
+            📥 导入
+          </button>
+
+          <button
             @click="triggerAiTagAll"
             :disabled="isAiTagging || isBusy || tasks.length === 0"
             class="px-3 py-1.5 rounded-lg bg-[#10b981]/15 hover:bg-[#10b981]/25 border border-[#10b981]/40 text-[#10b981] text-xs font-semibold flex items-center gap-1.5 transition active:scale-95 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
@@ -1213,7 +1317,7 @@ async function triggerAiTagAll() {
           >
             <div class="text-5xl leading-none select-none">📥</div>
             <h3 class="text-base font-bold text-white">拖拽图片或视频到这里</h3>
-            <p class="text-xs text-[#9ca3af]">支持多文件与文件夹拖拽，自动适配 Telegram 规范</p>
+            <p class="text-xs text-[#9ca3af]">支持多文件与文件夹拖拽，也可导入已导出的 zip / JSON</p>
 
             <div class="flex items-center gap-3 mt-2">
               <button
@@ -1227,6 +1331,12 @@ async function triggerAiTagAll() {
                 class="px-4 py-2 rounded-lg bg-[#252831] hover:bg-[#2e333e] active:bg-[#1c1e25] border border-[#363b47] text-[#e5e7eb] text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
               >
                 📁 添加文件夹
+              </button>
+              <button
+                @click="handleImport"
+                class="px-4 py-2 rounded-lg bg-[#252831] hover:bg-[#2e333e] active:bg-[#1c1e25] border border-[#363b47] text-[#e5e7eb] text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+              >
+                📥 导入
               </button>
             </div>
 

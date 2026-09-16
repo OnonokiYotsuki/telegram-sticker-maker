@@ -1,9 +1,11 @@
 """Export the current sticker list without transcoding."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
+import tempfile
 import zipfile
 from datetime import datetime
 from typing import Any, Callable, Iterable, Mapping, Optional
@@ -18,6 +20,7 @@ from core.pack_output import (
     STICKERS_JSON_NAME,
     PackEntry,
     build_stickers_manifest,
+    normalize_keywords,
     pack_stickers,
     unique_arcname,
 )
@@ -31,7 +34,7 @@ BUNDLE_SOURCES_DIR = "sources"
 
 
 class StickerListError(ValueError):
-    """Raised when the sticker list cannot be exported."""
+    """Raised when the sticker list cannot be exported or imported."""
 
 
 def default_list_name(now: Optional[datetime] = None) -> str:
@@ -524,3 +527,178 @@ def export_prepared_stickers(
         result["zip_path"] = packed["path"]
         result["bytes"] = packed["bytes"]
     return result
+
+
+def keywords_to_str(value: Any) -> str:
+    return ", ".join(normalize_keywords(value))
+
+
+def find_import_manifest(root: str) -> str:
+    root = os.path.abspath(root)
+    for name in (BUNDLE_JSON_NAME, STICKERS_JSON_NAME):
+        candidate = os.path.join(root, name)
+        if os.path.isfile(candidate):
+            return candidate
+    try:
+        for entry in sorted(os.listdir(root)):
+            child = os.path.join(root, entry)
+            if not os.path.isdir(child):
+                continue
+            for name in (BUNDLE_JSON_NAME, STICKERS_JSON_NAME):
+                candidate = os.path.join(child, name)
+                if os.path.isfile(candidate):
+                    return candidate
+    except OSError:
+        return ""
+    return ""
+
+
+def looks_like_import_path(path: str) -> bool:
+    raw = (path or "").strip()
+    if not raw:
+        return False
+    lower = raw.lower()
+    if lower.endswith(".zip") or lower.endswith(".json"):
+        return True
+    return os.path.isdir(raw) and bool(find_import_manifest(raw))
+
+
+def _import_cache_root() -> str:
+    return os.path.join(tempfile.gettempdir(), "tg_sticker_maker_imports")
+
+
+def extract_zip_for_import(zip_path: str) -> str:
+    source = os.path.abspath(zip_path)
+    st = os.stat(source)
+    key = hashlib.sha1(f"{source}:{st.st_mtime_ns}:{st.st_size}".encode("utf-8")).hexdigest()[:12]
+    stem = os.path.splitext(os.path.basename(source))[0] or "bundle"
+    dest = os.path.join(_import_cache_root(), f"{stem}_{key}")
+    marker = os.path.join(dest, ".ok")
+    if os.path.isfile(marker) and find_import_manifest(dest):
+        return dest
+    os.makedirs(dest, exist_ok=True)
+    with zipfile.ZipFile(source, "r") as zf:
+        zf.extractall(dest)
+    with open(marker, "w", encoding="utf-8") as fh:
+        fh.write(source)
+    return dest
+
+
+def resolve_import_media_path(root: str, raw_path: str) -> str:
+    raw = str(raw_path or "").strip()
+    if not raw:
+        return ""
+    if os.path.isfile(raw):
+        return os.path.abspath(raw)
+    rel = raw.replace("\\", "/").lstrip("/")
+    joined = os.path.abspath(os.path.join(root, *rel.split("/")))
+    if os.path.isfile(joined):
+        return joined
+    nested = os.path.join(root, os.path.basename(rel))
+    if os.path.isfile(nested):
+        return os.path.abspath(nested)
+    return ""
+
+
+def _normalize_list_item(raw: Mapping[str, Any], root: str) -> Optional[dict[str, Any]]:
+    src = resolve_import_media_path(root, str(raw.get("input_path") or ""))
+    if not src:
+        return None
+    item: dict[str, Any] = {
+        "input_path": src,
+        "file_name": str(raw.get("file_name") or os.path.basename(src)),
+        "emoji": str(raw.get("emoji") or ""),
+        "keywords": keywords_to_str(raw.get("keywords")),
+    }
+    if "is_video" in raw:
+        item["is_video"] = bool(raw.get("is_video"))
+    start_time = _as_optional_float(raw.get("start_time"))
+    end_time = _as_optional_float(raw.get("end_time"))
+    if start_time is not None:
+        item["start_time"] = start_time
+    if end_time is not None:
+        item["end_time"] = end_time
+    crop = _as_crop(raw.get("crop"))
+    if crop is not None:
+        item["crop"] = crop
+    radius = _as_optional_float(raw.get("crop_radius"))
+    if radius is not None and radius > 0.001:
+        item["crop_radius"] = max(0.0, min(1.0, radius))
+    for key in ("clip_group_id", "clip_id", "clip_label"):
+        val = str(raw.get(key) or "").strip()
+        if val:
+            item[key] = val
+    return item
+
+
+def _normalize_pack_item(raw: Mapping[str, Any], root: str) -> Optional[dict[str, Any]]:
+    src = resolve_import_media_path(root, str(raw.get("file") or raw.get("input_path") or ""))
+    if not src:
+        return None
+    return {
+        "input_path": src,
+        "file_name": str(raw.get("file") or os.path.basename(src)),
+        "emoji": str(raw.get("emoji") or ""),
+        "keywords": keywords_to_str(raw.get("keywords")),
+    }
+
+
+def import_sticker_bundle(path: str) -> dict[str, Any]:
+    """Load an exported folder, zip, or JSON back into sticker specs."""
+    source = os.path.abspath((path or "").strip())
+    if not source or not os.path.exists(source):
+        raise StickerListError("找不到导入文件")
+
+    if os.path.isfile(source) and source.lower().endswith(".zip"):
+        root = extract_zip_for_import(source)
+        manifest = find_import_manifest(root)
+    elif os.path.isfile(source) and source.lower().endswith(".json"):
+        manifest = source
+        root = os.path.dirname(source) or os.getcwd()
+    elif os.path.isdir(source):
+        manifest = find_import_manifest(source)
+        root = os.path.dirname(manifest) if manifest else source
+    else:
+        raise StickerListError("请选择导出的 zip、JSON 或文件夹")
+
+    if not manifest:
+        raise StickerListError("未找到 sticker_list.json 或 stickers.json")
+
+    try:
+        with open(manifest, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except Exception as exc:
+        raise StickerListError(f"无法读取列表文件: {exc}") from exc
+
+    if not isinstance(doc, dict) or not isinstance(doc.get("stickers"), list):
+        raise StickerListError("列表文件格式无效")
+
+    is_maker_list = doc.get("kind") == LIST_KIND or "export_mode" in doc
+    mode = "sources" if doc.get("export_mode") == "sources" else "list"
+    stickers: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for raw in doc["stickers"]:
+        if not isinstance(raw, Mapping):
+            continue
+        if is_maker_list or "input_path" in raw:
+            original = str(raw.get("input_path") or "").strip()
+            item = _normalize_list_item(raw, root)
+        else:
+            original = str(raw.get("file") or raw.get("input_path") or "").strip()
+            item = _normalize_pack_item(raw, root)
+        if item:
+            stickers.append(item)
+        elif original:
+            missing.append(original)
+
+    if not stickers:
+        raise StickerListError("没有可导入的贴纸文件")
+
+    return {
+        "mode": mode,
+        "count": len(stickers),
+        "stickers": stickers,
+        "missing": missing,
+        "json_path": os.path.abspath(manifest),
+        "root": os.path.abspath(root),
+    }

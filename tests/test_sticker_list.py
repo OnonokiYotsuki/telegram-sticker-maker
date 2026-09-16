@@ -19,6 +19,8 @@ from core.sticker_list import (
     default_bundle_zip_name,
     default_list_name,
     export_prepared_stickers,
+    import_sticker_bundle,
+    looks_like_import_path,
     prepared_output_ext,
     write_sticker_bundle,
     write_sticker_list,
@@ -415,3 +417,117 @@ def test_api_export_emits_task_progress(tmp_path):
     done = [e for e in events if e[0] == "onExportFinished"][0]
     assert done[1][0] is True
     assert done[1][2] == 1
+
+
+def test_import_sources_bundle_roundtrip(tmp_path):
+    src_a = tmp_path / "a.mp4"
+    src_b = tmp_path / "b.png"
+    src_a.write_bytes(b"video-a")
+    src_b.write_bytes(b"image-b")
+    dest = tmp_path / "bundle"
+    write_sticker_bundle(
+        str(dest),
+        [
+            {
+                "input_path": str(src_a),
+                "emoji": "1️⃣",
+                "keywords": "one",
+                "start_time": 0.5,
+                "end_time": 2.5,
+                "crop": [10, 20, 100, 120],
+                "crop_radius": 0.4,
+                "clip_group_id": "grp-1",
+                "clip_id": "clip-1",
+                "clip_label": "[0.500s - 2.500s]",
+            },
+            {"input_path": str(src_a), "emoji": "2️⃣", "start_time": 2.5, "end_time": 4.0},
+            {"input_path": str(src_b), "emoji": "3️⃣", "is_video": False},
+        ],
+    )
+    assert looks_like_import_path(str(dest))
+    result = import_sticker_bundle(str(dest))
+    assert result["mode"] == "sources"
+    assert result["count"] == 3
+    first = result["stickers"][0]
+    assert first["emoji"] == "1️⃣"
+    assert first["keywords"] == "one"
+    assert first["start_time"] == 0.5
+    assert first["end_time"] == 2.5
+    assert first["crop"] == [10, 20, 100, 120]
+    assert first["clip_group_id"] == "grp-1"
+    assert os.path.isfile(first["input_path"])
+    assert first["input_path"].endswith(os.path.join(BUNDLE_SOURCES_DIR, "a.mp4")) or first[
+        "input_path"
+    ].replace("\\", "/").endswith(f"{BUNDLE_SOURCES_DIR}/a.mp4")
+
+
+def test_import_sources_zip_roundtrip(tmp_path):
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"src")
+    zpath = tmp_path / "bundle.zip"
+    write_sticker_bundle(
+        str(tmp_path / "stage"),
+        [{"input_path": str(src), "emoji": "🐱", "start_time": 1, "end_time": 2}],
+        zip_path=str(zpath),
+    )
+    result = import_sticker_bundle(str(zpath))
+    assert result["count"] == 1
+    assert result["stickers"][0]["emoji"] == "🐱"
+    assert result["stickers"][0]["start_time"] == 1
+    assert os.path.isfile(result["stickers"][0]["input_path"])
+
+
+def test_import_prepared_folder_and_zip(tmp_path):
+    src = tmp_path / "photo.png"
+    src.write_bytes(b"png-bytes")
+    dest = tmp_path / "out"
+    export_prepared_stickers(
+        [{"input_path": str(src), "emoji": "🐱", "is_video": False, "index": 1, "keywords": "cat"}],
+        str(dest),
+    )
+    folder = import_sticker_bundle(str(dest))
+    assert folder["count"] == 1
+    assert folder["stickers"][0]["emoji"] == "🐱"
+    assert folder["stickers"][0]["keywords"] == "cat"
+    assert os.path.isfile(folder["stickers"][0]["input_path"])
+
+    zpath = tmp_path / "pack.zip"
+    export_prepared_stickers(
+        [{"input_path": str(src), "emoji": "🐶", "is_video": False, "index": 2}],
+        str(tmp_path / "stage"),
+        zip_path=str(zpath),
+    )
+    packed = import_sticker_bundle(str(zpath))
+    assert packed["count"] == 1
+    assert packed["stickers"][0]["emoji"] == "🐶"
+    assert os.path.isfile(packed["stickers"][0]["input_path"])
+
+
+def test_api_import_sticker_list(tmp_path):
+    src = tmp_path / "a.png"
+    src.write_bytes(b"img")
+    dest = tmp_path / "bundle"
+    write_sticker_bundle(str(dest), [{"input_path": str(src), "emoji": "🎉", "is_video": False}])
+    api = AppAPI()
+    res = api.import_sticker_list(str(dest))
+    assert res["status"] == "ok"
+    assert res["count"] == 1
+    assert res["stickers"][0]["emoji"] == "🎉"
+
+
+def test_import_skips_missing_and_rejects_empty(tmp_path):
+    dest = tmp_path / "broken.json"
+    dest.write_text(
+        json.dumps(
+            {
+                "kind": LIST_KIND,
+                "version": 1,
+                "export_mode": "sources",
+                "stickers": [{"input_path": "sources/missing.mp4", "emoji": "x"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(StickerListError, match="没有可导入的贴纸文件"):
+        import_sticker_bundle(str(dest))
