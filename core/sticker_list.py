@@ -5,7 +5,10 @@ import json
 import os
 import shutil
 from datetime import datetime
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
+
+ExportProgressCb = Callable[..., None]
+ExportCancelCheck = Callable[[], bool]
 
 from PIL import Image
 
@@ -123,7 +126,18 @@ def write_sticker_list(
     return {"path": dest, "count": len(doc["stickers"])}
 
 
-def write_sticker_bundle(dest_dir: str, stickers: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+def _raise_if_canceled(cancel_check: Optional[ExportCancelCheck]) -> None:
+    if cancel_check and cancel_check():
+        raise StickerListError("已取消导出")
+
+
+def write_sticker_bundle(
+    dest_dir: str,
+    stickers: Iterable[Mapping[str, Any]],
+    *,
+    progress_callback: Optional[ExportProgressCb] = None,
+    cancel_check: Optional[ExportCancelCheck] = None,
+) -> dict[str, Any]:
     """Copy unique source files and write a JSON list with relative paths."""
     root = os.path.abspath(dest_dir)
     sources_dir = os.path.join(root, BUNDLE_SOURCES_DIR)
@@ -133,23 +147,33 @@ def write_sticker_bundle(dest_dir: str, stickers: Iterable[Mapping[str, Any]]) -
     path_map: dict[str, str] = {}
     missing: list[str] = []
     remapped: list[dict[str, Any]] = []
-    rows = list(stickers)
+    rows = [raw for raw in stickers if str(raw.get("input_path") or "").strip()]
+    total = len(rows)
 
-    for raw in rows:
+    for i, raw in enumerate(rows, 1):
+        _raise_if_canceled(cancel_check)
         src = os.path.abspath(str(raw.get("input_path") or "").strip())
-        if not src:
-            continue
+        if progress_callback:
+            progress_callback(i, total, raw, phase="start")
         if src not in path_map:
             if not os.path.isfile(src):
                 missing.append(src)
+                if progress_callback:
+                    progress_callback(i, total, raw, phase="skip")
                 continue
             name = unique_arcname(os.path.basename(src), used)
-            shutil.copy2(src, os.path.join(sources_dir, name))
+            copied = os.path.join(sources_dir, name)
+            shutil.copy2(src, copied)
             path_map[src] = f"{BUNDLE_SOURCES_DIR}/{name}"
+        rel = path_map[src]
         item = dict(raw)
-        item["input_path"] = path_map[src]
-        item["file_name"] = os.path.basename(path_map[src])
+        item["input_path"] = rel
+        item["file_name"] = os.path.basename(rel)
         remapped.append(item)
+        abs_copied = os.path.join(root, rel.replace("/", os.sep))
+        size = os.path.getsize(abs_copied) if os.path.isfile(abs_copied) else 0
+        if progress_callback:
+            progress_callback(i, total, raw, phase="done", dest=abs_copied, size=size)
 
     if not remapped:
         raise StickerListError("没有可复制的源文件")
@@ -371,6 +395,8 @@ def export_prepared_stickers(
     dest_dir: str,
     *,
     zip_path: str = "",
+    progress_callback: Optional[ExportProgressCb] = None,
+    cancel_check: Optional[ExportCancelCheck] = None,
 ) -> dict[str, Any]:
     """Export conversion-named files without transcoding. Optionally zip like convert."""
     root = os.path.abspath(dest_dir)
@@ -378,13 +404,19 @@ def export_prepared_stickers(
     used: set[str] = set()
     entries: list[PackEntry] = []
     missing: list[str] = []
+    rows = [raw for raw in stickers if str(raw.get("input_path") or "").strip()]
+    total = len(rows)
+    report_item_path = not bool(zip_path)
 
-    for i, raw in enumerate(stickers, 1):
+    for i, raw in enumerate(rows, 1):
+        _raise_if_canceled(cancel_check)
         src = str(raw.get("input_path") or "").strip()
-        if not src:
-            continue
+        if progress_callback:
+            progress_callback(i, total, raw, phase="start")
         if not os.path.isfile(src):
             missing.append(src)
+            if progress_callback:
+                progress_callback(i, total, raw, phase="skip")
             continue
         index = int(raw.get("index") or i)
         emoji = str(raw.get("emoji") or "")
@@ -394,16 +426,22 @@ def export_prepared_stickers(
         ext = prepared_output_ext(src, is_video=is_video, crop=crop, radius=radius)
         name = unique_arcname(format_prepared_name(index, emoji, ext), used)
         out_path = os.path.join(root, name)
-        extract_source_clip(
-            src,
-            out_path,
-            is_video=is_video,
-            start_time=_as_optional_float(raw.get("start_time")),
-            end_time=_as_optional_float(raw.get("end_time")),
-            duration=_as_optional_float(raw.get("duration")),
-            crop=crop,
-            crop_radius=radius,
-        )
+        try:
+            extract_source_clip(
+                src,
+                out_path,
+                is_video=is_video,
+                start_time=_as_optional_float(raw.get("start_time")),
+                end_time=_as_optional_float(raw.get("end_time")),
+                duration=_as_optional_float(raw.get("duration")),
+                crop=crop,
+                crop_radius=radius,
+            )
+        except Exception as exc:
+            if progress_callback:
+                progress_callback(i, total, raw, phase="error", error=str(exc))
+            raise
+        size = os.path.getsize(out_path) if os.path.isfile(out_path) else 0
         entries.append(
             PackEntry(
                 path=out_path,
@@ -412,6 +450,15 @@ def export_prepared_stickers(
                 arcname=name,
             )
         )
+        if progress_callback:
+            progress_callback(
+                i,
+                total,
+                raw,
+                phase="done",
+                dest=out_path if report_item_path else "",
+                size=size,
+            )
 
     if not entries:
         raise StickerListError("没有可导出的源文件")
@@ -429,6 +476,9 @@ def export_prepared_stickers(
         "json_path": manifest_path,
     }
     if zip_path:
+        _raise_if_canceled(cancel_check)
+        if progress_callback:
+            progress_callback(len(entries), max(total, 1), {}, phase="pack")
         packed = pack_stickers(entries, zip_path, allow_any_file=True)
         result["path"] = packed["path"]
         result["zip_path"] = packed["path"]

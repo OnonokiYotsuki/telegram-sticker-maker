@@ -4,6 +4,7 @@ import subprocess
 import zipfile
 from datetime import datetime
 
+import pytest
 from PIL import Image
 
 from core.analyzer import MediaAnalyzer
@@ -12,6 +13,7 @@ from core.sticker_list import (
     BUNDLE_JSON_NAME,
     BUNDLE_SOURCES_DIR,
     LIST_KIND,
+    StickerListError,
     build_sticker_list_document,
     default_bundle_name,
     default_list_name,
@@ -277,3 +279,84 @@ def test_api_export_sources_bundle(tmp_path):
     assert res["copied"] == 1
     assert (dest / BUNDLE_JSON_NAME).is_file()
     assert (dest / BUNDLE_SOURCES_DIR / "clip.mp4").is_file()
+
+
+def test_export_prepared_reports_progress(tmp_path):
+    src_a = tmp_path / "a.png"
+    src_b = tmp_path / "b.png"
+    src_a.write_bytes(b"a")
+    src_b.write_bytes(b"b")
+    dest = tmp_path / "out"
+    events = []
+
+    def cb(index, total, item, *, phase, dest="", error="", size=0):
+        events.append((phase, index, total, item.get("emoji"), os.path.basename(dest) if dest else "", size))
+
+    result = export_prepared_stickers(
+        [
+            {"input_path": str(src_a), "emoji": "🐱", "is_video": False, "index": 1},
+            {"input_path": str(src_b), "emoji": "🐶", "is_video": False, "index": 2},
+        ],
+        str(dest),
+        progress_callback=cb,
+    )
+    assert result["count"] == 2
+    phases = [e[0] for e in events]
+    assert phases == ["start", "done", "start", "done"]
+    assert events[0][1:] == (1, 2, "🐱", "", 0)
+    assert events[1][3] == "🐱"
+    assert events[1][5] > 0
+
+
+def test_export_prepared_cancel_check(tmp_path):
+    src_a = tmp_path / "a.png"
+    src_b = tmp_path / "b.png"
+    src_a.write_bytes(b"a")
+    src_b.write_bytes(b"b")
+    dest = tmp_path / "out"
+    seen = {"n": 0}
+
+    def cancel():
+        seen["n"] += 1
+        return seen["n"] > 1
+
+    with pytest.raises(StickerListError, match="已取消导出"):
+        export_prepared_stickers(
+            [
+                {"input_path": str(src_a), "emoji": "🐱", "is_video": False, "index": 1},
+                {"input_path": str(src_b), "emoji": "🐶", "is_video": False, "index": 2},
+            ],
+            str(dest),
+            cancel_check=cancel,
+        )
+    assert (dest / "001_🐱.png").is_file()
+    assert not (dest / "002_🐶.png").exists()
+
+
+def test_api_export_emits_task_progress(tmp_path):
+    src = tmp_path / "b.png"
+    src.write_bytes(b"img")
+    dest = tmp_path / "out"
+    api = AppAPI()
+    events = []
+    api._emit = lambda name, *args: events.append((name, args))
+    res = api.export_sticker_list(
+        [{"task_id": 7, "input_path": str(src), "emoji": "🐱", "is_video": False, "index": 1}],
+        dest_path=str(dest),
+        mode="list",
+        global_options={"pack_output": False},
+    )
+    assert res["status"] == "ok"
+    names = [e[0] for e in events]
+    assert "onExportProgress" in names
+    assert "onTaskStarted" in names
+    assert "onTaskFinished" in names
+    assert "onExportFinished" in names
+    started = [e for e in events if e[0] == "onTaskStarted"]
+    finished = [e for e in events if e[0] == "onTaskFinished"]
+    assert started[0][1][0] == 7
+    assert finished[0][1][0] == 7
+    assert finished[0][1][1] is True
+    done = [e for e in events if e[0] == "onExportFinished"][0]
+    assert done[1][0] is True
+    assert done[1][2] == 1

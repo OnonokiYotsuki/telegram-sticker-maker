@@ -44,8 +44,11 @@ const globalOptions = ref<GlobalOptions>({
 const proxyCacheHint = ref('')
 
 const isConverting = ref(false)
+const isExporting = ref(false)
+const exportHint = ref('')
 const lastPackPath = ref('')
 const isAiTagging = ref(false)
+const isBusy = computed(() => isConverting.value || isExporting.value)
 const isDraggingOver = ref(false)
 const showSettings = ref(false)
 const showExportMenu = ref(false)
@@ -81,7 +84,7 @@ function commitEmojiEdit(task: TaskItem) {
 }
 
 function openKeywordsModal(task: TaskItem) {
-  if (isConverting.value) return
+  if (isBusy.value) return
   keywordsTask.value = task
 }
 
@@ -129,7 +132,20 @@ const taskCounts = computed(() => {
   return { total, waiting, converting, success, failed }
 })
 
+const overallDone = computed(() => taskCounts.value.success + taskCounts.value.failed)
+
+const overallProgress = computed(() => {
+  const total = tasks.value.length
+  if (!total || !isBusy.value) return 0
+  const sum = tasks.value.reduce((acc, t) => acc + (t.progress || 0), 0)
+  return Math.max(0, Math.min(100, Math.round(sum / total)))
+})
+
 const statusSummaryText = computed(() => {
+  if (isExporting.value) {
+    const hint = exportHint.value ? ` · ${exportHint.value}` : ''
+    return `正在导出: ${overallDone.value} 完成 / 共 ${taskCounts.value.total} 项${hint}`
+  }
   if (isConverting.value) {
     return `正在转码: ${taskCounts.value.converting} 进行中, ${taskCounts.value.success} 完成 / 共 ${taskCounts.value.total} 项`
   }
@@ -190,7 +206,7 @@ function onKeyDown(e: KeyboardEvent) {
       selectAll()
     }
   } else if (e.key === 'Delete') {
-    if (selectedTaskIds.value.size > 0 && !isConverting.value) {
+    if (selectedTaskIds.value.size > 0 && !isBusy.value) {
       e.preventDefault()
       removeSelectedTasks()
     }
@@ -234,7 +250,7 @@ function setupIpcListeners() {
     if (t) {
       t.status = 'converting'
       t.progress = 0
-      t.statusMsg = '正在转码...'
+      t.statusMsg = isExporting.value ? '正在导出...' : '正在转码...'
     }
   }
 
@@ -264,6 +280,14 @@ function setupIpcListeners() {
 
   window.onPackFinished = (success: boolean, zipPath: string, _count: number) => {
     if (success && zipPath) lastPackPath.value = zipPath
+  }
+
+  window.onExportProgress = (_done: number, _total: number, msg: string) => {
+    exportHint.value = msg || ''
+  }
+
+  window.onExportFinished = (success: boolean, path: string, count: number, error: string) => {
+    finishExportFromEvent(success, path, count, error)
   }
 
   window.onAiItemStarted = (_taskId: number, fileName: string) => {
@@ -596,8 +620,8 @@ function removeTask(taskId: number) {
 }
 
 function clearAllTasks() {
-  if (isConverting.value) {
-    alert('转换正在进行中，请先停止！')
+  if (isBusy.value) {
+    alert('任务正在进行中，请先停止！')
     return
   }
   tasks.value = []
@@ -876,7 +900,7 @@ async function aiTagSingle(task: TaskItem) {
 
 // --- Conversion Controls ---
 async function startConversion() {
-  if (tasks.value.length === 0) return
+  if (tasks.value.length === 0 || isBusy.value) return
   if (!globalOptions.value.pack_output) {
     const ok = window.confirm(
       '未勾选「输出为压缩包」。贴纸 keywords 只会写入压缩包内的 stickers.json，散文件导出不会包含该映射。是否继续转换？'
@@ -920,10 +944,46 @@ async function cancelConversion() {
   }
 }
 
+function markTasksWaitingExport() {
+  for (const t of tasks.value) {
+    t.status = 'waiting'
+    t.progress = 0
+    t.statusMsg = '等待导出...'
+  }
+}
+
+function markRemainingExportCanceled() {
+  for (const t of tasks.value) {
+    if (t.status === 'waiting' || t.status === 'converting') {
+      t.status = 'failed'
+      t.statusMsg = '已取消'
+    }
+  }
+}
+
+function finishExportFromEvent(success: boolean, path: string, count: number, error: string) {
+  isExporting.value = false
+  exportHint.value = ''
+  if (success && path) {
+    lastPackPath.value = path
+    appendLog(`🎉 导出完成：${count} 项 -> ${path}`)
+    return
+  }
+  if (error === '已取消导出') {
+    markRemainingExportCanceled()
+    appendLog('已取消导出')
+    return
+  }
+  if (error) {
+    appendLog(`❌ 导出失败: ${error}`)
+  }
+}
+
 async function exportStickerList(mode: 'list' | 'sources') {
   showExportMenu.value = false
-  if (tasks.value.length === 0) return
+  if (tasks.value.length === 0 || isBusy.value) return
   const payload = tasks.value.map((t) => ({
+    task_id: t.taskId,
     input_path: t.inputPath,
     file_name: t.mediaInfo.file_name,
     is_video: t.mediaInfo.is_video,
@@ -939,8 +999,12 @@ async function exportStickerList(mode: 'list' | 'sources') {
     index: t.index,
     duration: t.mediaInfo.duration,
   }))
+  isExporting.value = true
+  exportHint.value = '准备导出...'
   try {
     if (!window.pywebview?.api?.export_sticker_list) {
+      isExporting.value = false
+      exportHint.value = ''
       appendLog('❌ 当前环境不支持导出列表')
       return
     }
@@ -955,7 +1019,14 @@ async function exportStickerList(mode: 'list' | 'sources') {
         custom_output_dir: globalOptions.value.custom_output_dir,
       },
     )
+    if (res.status === 'started') {
+      markTasksWaitingExport()
+      return
+    }
+    isExporting.value = false
+    exportHint.value = ''
     if (res.status === 'ok' && res.path) {
+      lastPackPath.value = res.path
       if (mode === 'sources') {
         const copied = res.copied ?? 0
         appendLog(`📤 已导出源文件+JSON：${res.count} 项，复制 ${copied} 个文件 -> ${res.path}`)
@@ -974,12 +1045,14 @@ async function exportStickerList(mode: 'list' | 'sources') {
       appendLog(`❌ 导出失败: ${res.error}`)
     }
   } catch (e) {
+    isExporting.value = false
+    exportHint.value = ''
     appendLog(`❌ 导出失败: ${e}`)
   }
 }
 
 async function triggerAiTagAll() {
-  if (tasks.value.length === 0) return
+  if (tasks.value.length === 0 || isBusy.value) return
   const targets = selectedTaskIds.value.size > 0
     ? tasks.value.filter((t) => selectedTaskIds.value.has(t.taskId))
     : tasks.value
@@ -1033,7 +1106,8 @@ async function triggerAiTagAll() {
             : 'bg-[#24a1de]/15 text-[#2eb5f7] border-[#24a1de]'
         ]"
       >
-        <span v-if="selectedTaskIds.size > 0">已选 {{ selectedTaskIds.size }} / {{ tasks.length }} 项</span>
+        <span v-if="isBusy">{{ isExporting ? '正在导出' : '正在转码' }} {{ overallDone }} / {{ tasks.length }}</span>
+        <span v-else-if="selectedTaskIds.size > 0">已选 {{ selectedTaskIds.size }} / {{ tasks.length }} 项</span>
         <span v-else>已添加 {{ tasks.length }} 项</span>
       </div>
     </header>
@@ -1070,7 +1144,7 @@ async function triggerAiTagAll() {
 
           <button
             @click="triggerAiTagAll"
-            :disabled="isAiTagging || isConverting || tasks.length === 0"
+            :disabled="isAiTagging || isBusy || tasks.length === 0"
             class="px-3 py-1.5 rounded-lg bg-[#10b981]/15 hover:bg-[#10b981]/25 border border-[#10b981]/40 text-[#10b981] text-xs font-semibold flex items-center gap-1.5 transition active:scale-95 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             :title="selectedTaskIds.size > 0 ? '使用视觉模型识别所选贴纸画面并推荐 Emoji' : '使用视觉模型识别全部贴纸画面并推荐 Emoji'"
           >
@@ -1087,7 +1161,7 @@ async function triggerAiTagAll() {
 
           <button
             @click="clearAllTasks"
-            :disabled="isConverting || tasks.length === 0"
+            :disabled="isBusy || tasks.length === 0"
             class="px-3 py-1.5 rounded-lg bg-[#242730] hover:bg-red-500/20 hover:text-red-400 border border-[#333844] text-[#e5e7eb] text-xs font-medium flex items-center gap-1.5 transition active:scale-95 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ml-auto"
           >
             🗑️ 清空列表
@@ -1261,7 +1335,7 @@ async function triggerAiTagAll() {
                     <td class="py-2 px-3">
                       <button
                         type="button"
-                        :disabled="isConverting"
+                        :disabled="isBusy"
                         class="w-full flex items-center justify-between gap-1.5 bg-[#171a21] border border-[#2d323e] hover:border-[#24a1de] px-2 py-1 rounded-md text-xs text-left cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                         :title="task.keywords || '设置关键词（写入压缩包 stickers.json）'"
                         @click.stop="openKeywordsModal(task)"
@@ -1404,7 +1478,7 @@ async function triggerAiTagAll() {
             </h4>
             <select
               v-model="globalOptions.preset_style"
-              :disabled="isConverting"
+              :disabled="isBusy"
               @change="saveCurrentSettings"
               class="w-full bg-[#15171c] border border-[#282b35] hover:border-[#333844] rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-[#24a1de] cursor-pointer"
             >
@@ -1423,7 +1497,7 @@ async function triggerAiTagAll() {
               <input
                 v-model="globalOptions.same_dir"
                 type="checkbox"
-                :disabled="isConverting"
+                :disabled="isBusy"
                 @change="saveCurrentSettings"
                 class="rounded bg-[#15171c] border-[#333844] text-[#24a1de] focus:ring-0 w-3.5 h-3.5 cursor-pointer"
               />
@@ -1465,22 +1539,43 @@ async function triggerAiTagAll() {
 
         <!-- Right Bottom Action Buttons (Faithful to PySide6 MainWindow) -->
         <div class="space-y-2 pt-2 border-t border-[#252831] shrink-0">
+          <div
+            v-if="isBusy"
+            class="rounded-lg border border-[#333844] bg-[#15171c] px-3 py-2 space-y-1.5"
+          >
+            <div class="flex items-center justify-between gap-2 text-[11px]">
+              <span class="flex items-center gap-1.5 text-[#2eb5f7] font-medium">
+                <span class="inline-block w-3 h-3 border-2 border-[#24a1de]/30 border-t-[#24a1de] rounded-full animate-spin motion-reduce:animate-none"></span>
+                {{ isExporting ? '正在导出' : '正在转码' }}
+              </span>
+              <span class="font-mono text-gray-400 shrink-0">
+                {{ overallDone }} / {{ taskCounts.total }} · {{ overallProgress }}%
+              </span>
+            </div>
+            <div class="w-full h-1.5 bg-[#20232b] rounded-full overflow-hidden">
+              <div
+                class="h-full bg-[#24a1de] transition-all duration-150"
+                :style="{ width: `${overallProgress}%` }"
+              ></div>
+            </div>
+            <p class="text-[10px] text-gray-500 truncate">{{ exportHint || statusSummaryText }}</p>
+          </div>
           <div class="flex items-center gap-2">
             <button
               @click="startConversion"
-              :disabled="tasks.length === 0 || isConverting"
+              :disabled="tasks.length === 0 || isBusy"
               class="flex-1 py-2.5 rounded-lg bg-[#24a1de] hover:bg-[#2eb5f7] active:bg-[#1d89be] text-white text-xs font-bold flex items-center justify-center gap-2 shadow-lg shadow-[#24a1de]/20 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              🚀 开始转换
+              {{ isConverting ? '转换中...' : '🚀 开始转换' }}
             </button>
             <div class="relative shrink-0">
               <button
                 @click.stop="showExportMenu = !showExportMenu"
-                :disabled="tasks.length === 0 || isConverting"
+                :disabled="tasks.length === 0 || isBusy"
                 class="px-3 py-2.5 rounded-lg bg-[#242730] hover:bg-[#2e333e] border border-[#333844] text-gray-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 title="导出贴纸列表，不进行转码"
               >
-                📤 导出
+                {{ isExporting ? '导出中...' : '📤 导出' }}
               </button>
               <div
                 v-if="showExportMenu"
@@ -1509,7 +1604,7 @@ async function triggerAiTagAll() {
               <input
                 v-model="globalOptions.pack_output"
                 type="checkbox"
-                :disabled="isConverting"
+                :disabled="isBusy"
                 @change="saveCurrentSettings"
                 class="rounded bg-[#15171c] border-[#333844] text-[#24a1de] focus:ring-0 w-3.5 h-3.5 cursor-pointer"
               />
@@ -1522,7 +1617,7 @@ async function triggerAiTagAll() {
 
           <button
             @click="cancelConversion"
-            :disabled="!isConverting"
+            :disabled="!isBusy"
             class="w-full py-2 rounded-lg bg-[#ef4444] hover:bg-[#dc2626] active:bg-[#b91c1c] text-white text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
           >
             🛑 停止

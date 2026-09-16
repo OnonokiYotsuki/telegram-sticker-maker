@@ -243,7 +243,7 @@ class AppAPI:
 
     def cancel_conversion(self):
         self._canceled = True
-        self._log(">>> 用户请求取消转换。")
+        self._log(">>> 用户请求取消。")
 
     def start_conversion(self, tasks: List[Dict[str, Any]], global_options: Dict[str, Any]):
         self._canceled = False
@@ -262,28 +262,118 @@ class AppAPI:
         opts = global_options or {}
         try:
             dest = (dest_path or "").strip()
-            if export_mode == "sources":
-                if not dest:
-                    dest = self._resolve_bundle_dir(directory=directory)
-                result = write_sticker_bundle(dest, stickers)
-                missing = result.get("missing") or []
-                self._log(
-                    f"📤 已导出源文件+JSON：{result['count']} 项，复制 {result['copied']} 个文件 -> {result['path']}"
-                )
-                if missing:
-                    self._log(f"⚠️ 有 {len(missing)} 个源文件缺失，已跳过")
-                return {"status": "ok", **result}
-            result = self._export_prepared(stickers, dest, directory=directory, opts=opts)
-            missing = result.get("missing") or []
-            self._log(f"📤 已导出转换前文件 {result['count']} 项 -> {result['path']}")
-            if missing:
-                self._log(f"⚠️ 有 {len(missing)} 个源文件缺失，已跳过")
-            return {"status": "ok", **result}
+            if export_mode == "sources" and not dest:
+                dest = self._resolve_bundle_dir(directory=directory)
         except StickerListError as e:
             self._log(f"⚠️ 导出列表跳过: {e}")
             return {"status": "empty", "error": str(e)}
         except Exception as e:
             self._log(f"❌ 导出列表失败: {e}")
+            return {"status": "error", "error": str(e)}
+
+        self._canceled = False
+        args = (stickers, dest, directory, export_mode, opts)
+        if webview.windows:
+            threading.Thread(target=self._run_export_worker, args=args, daemon=True).start()
+            return {"status": "started"}
+        return self._run_export_worker(*args)
+
+    def _run_export_worker(
+        self,
+        stickers: List[Dict[str, Any]],
+        dest: str,
+        directory: str,
+        export_mode: str,
+        opts: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        completed: set = set()
+        total = sum(1 for item in stickers if str(item.get("input_path") or "").strip())
+        self._log(f">>> 开始导出 {total} 项...")
+        self._emit("onExportProgress", 0, max(total, 1), "准备导出...")
+
+        def progress_callback(index: int, n: int, item: Dict[str, Any], **kwargs: Any) -> None:
+            if self._canceled:
+                raise StickerListError("已取消导出")
+            phase = str(kwargs.get("phase") or "")
+            dest_item = str(kwargs.get("dest") or "")
+            error = str(kwargs.get("error") or "")
+            size = int(kwargs.get("size") or 0)
+            task_id = item.get("task_id")
+            name = os.path.basename(
+                str(item.get("file_name") or item.get("input_path") or dest_item or "")
+            )
+            count = n or max(total, 1)
+            if phase == "start":
+                self._log(f"📤 [{index}/{count}] 正在导出 {name}")
+                self._emit("onExportProgress", max(index - 1, 0), count, f"正在导出 {name}")
+                if task_id is not None:
+                    self._emit("onTaskStarted", task_id)
+                    self._emit("onTaskProgress", task_id, 0.08, "正在导出...")
+            elif phase == "done":
+                self._emit("onExportProgress", index, count, f"已导出 {name}")
+                if task_id is not None:
+                    completed.add(task_id)
+                    self._emit("onTaskFinished", task_id, True, "已导出", dest_item, size)
+            elif phase == "skip":
+                self._log(f"⚠️ [{index}/{count}] 源文件缺失: {name}")
+                if task_id is not None:
+                    completed.add(task_id)
+                    self._emit("onTaskFinished", task_id, False, "源文件缺失", "", 0)
+            elif phase == "error":
+                self._log(f"❌ [{index}/{count}] 导出失败: {error}")
+                if task_id is not None:
+                    completed.add(task_id)
+                    self._emit("onTaskFinished", task_id, False, error or "导出失败", "", 0)
+            elif phase == "pack":
+                self._log("📦 正在打包压缩包...")
+                self._emit("onExportProgress", count, count, "正在打包压缩包...")
+
+        def finish_remaining(msg: str) -> None:
+            for item in stickers:
+                task_id = item.get("task_id")
+                if task_id is None or task_id in completed:
+                    continue
+                self._emit("onTaskFinished", task_id, False, msg, "", 0)
+
+        try:
+            if export_mode == "sources":
+                result = write_sticker_bundle(
+                    dest,
+                    stickers,
+                    progress_callback=progress_callback,
+                    cancel_check=lambda: self._canceled,
+                )
+                missing = result.get("missing") or []
+                self._log(
+                    f"📤 已导出源文件+JSON：{result['count']} 项，复制 {result['copied']} 个文件 -> {result['path']}"
+                )
+            else:
+                result = self._export_prepared(
+                    stickers,
+                    dest,
+                    directory=directory,
+                    opts=opts,
+                    progress_callback=progress_callback,
+                    cancel_check=lambda: self._canceled,
+                )
+                missing = result.get("missing") or []
+                self._log(f"📤 已导出转换前文件 {result['count']} 项 -> {result['path']}")
+            if missing:
+                self._log(f"⚠️ 有 {len(missing)} 个源文件缺失，已跳过")
+            zip_path = str(result.get("zip_path") or "")
+            if zip_path:
+                self._emit("onPackFinished", True, zip_path, result.get("count") or 0)
+            self._emit("onExportFinished", True, result.get("path") or "", result.get("count") or 0, "")
+            return {"status": "ok", **result}
+        except StickerListError as e:
+            finish_remaining(str(e))
+            self._log(f"⚠️ 导出列表跳过: {e}")
+            self._emit("onExportFinished", False, "", 0, str(e))
+            return {"status": "empty", "error": str(e)}
+        except Exception as e:
+            finish_remaining(str(e))
+            self._log(f"❌ 导出列表失败: {e}")
+            self._emit("onExportFinished", False, "", 0, str(e))
             return {"status": "error", "error": str(e)}
 
     def _export_prepared(
@@ -292,32 +382,44 @@ class AppAPI:
         dest_path: str,
         directory: str,
         opts: Dict[str, Any],
+        progress_callback=None,
+        cancel_check=None,
     ) -> Dict[str, Any]:
         pack_output = bool(opts.get("pack_output", True))
         dest = (dest_path or "").strip()
+        extra = {"progress_callback": progress_callback, "cancel_check": cancel_check}
         if dest.lower().endswith(".zip"):
             staging = tempfile.mkdtemp(prefix="tg_stickers_export_")
             try:
-                return export_prepared_stickers(stickers, staging, zip_path=dest)
+                return export_prepared_stickers(stickers, staging, zip_path=dest, **extra)
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
         if dest:
-            return export_prepared_stickers(stickers, dest)
+            return export_prepared_stickers(stickers, dest, **extra)
 
         out_dir = (directory or "").strip() or self._pack_zip_dir(opts)
         if pack_output:
             staging = tempfile.mkdtemp(prefix="tg_stickers_export_")
             try:
                 zip_path = self._resolve_zip_path(zip_dir=out_dir)
-                return export_prepared_stickers(stickers, staging, zip_path=zip_path)
+                return export_prepared_stickers(stickers, staging, zip_path=zip_path, **extra)
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
         if opts.get("same_dir"):
-            return self._export_prepared_same_dir(stickers)
+            return self._export_prepared_same_dir(
+                stickers,
+                progress_callback=progress_callback,
+                cancel_check=cancel_check,
+            )
         os.makedirs(out_dir, exist_ok=True)
-        return export_prepared_stickers(stickers, out_dir)
+        return export_prepared_stickers(stickers, out_dir, **extra)
 
-    def _export_prepared_same_dir(self, stickers: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _export_prepared_same_dir(
+        self,
+        stickers: List[Dict[str, Any]],
+        progress_callback=None,
+        cancel_check=None,
+    ) -> Dict[str, Any]:
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for item in stickers:
             src = str(item.get("input_path") or "").strip()
@@ -326,11 +428,25 @@ class AppAPI:
             grouped.setdefault(os.path.dirname(os.path.abspath(src)), []).append(item)
         if not grouped:
             raise StickerListError("贴纸列表为空")
+        total_items = sum(len(rows) for rows in grouped.values())
+        offset = 0
         total = 0
         missing: List[str] = []
         last_path = ""
         for folder, rows in grouped.items():
-            result = export_prepared_stickers(rows, folder)
+            def make_cb(base: int):
+                def cb(index: int, _n: int, item: Dict[str, Any], **kwargs: Any) -> None:
+                    if progress_callback:
+                        progress_callback(base + index, total_items, item, **kwargs)
+                return cb
+
+            result = export_prepared_stickers(
+                rows,
+                folder,
+                progress_callback=make_cb(offset) if progress_callback else None,
+                cancel_check=cancel_check,
+            )
+            offset += int(result["count"]) + len(result.get("missing") or [])
             total += int(result["count"])
             missing.extend(result.get("missing") or [])
             last_path = str(result["path"])

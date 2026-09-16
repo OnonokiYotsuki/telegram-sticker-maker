@@ -150,6 +150,8 @@ declare global {
     onTaskFinished?: (taskId: number, success: boolean, msg: string, outPath: string, size: number) => void
     onAllCompleted?: () => void
     onPackFinished?: (success: boolean, zipPath: string, count: number) => void
+    onExportProgress?: (done: number, total: number, msg: string) => void
+    onExportFinished?: (success: boolean, path: string, count: number, error: string) => void
     onAiItemStarted?: (taskId: number, fileName: string) => void
     onAiItemFinished?: (taskId: number, emoji: string) => void
     onAiItemError?: (taskId: number, err: string) => void
