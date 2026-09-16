@@ -103,7 +103,16 @@ export interface AppAPI {
     stickers: Record<string, unknown>[],
     dest_path?: string,
     directory?: string,
-  ) => Promise<{ status: string; path?: string; count?: number; error?: string }>
+    mode?: 'list' | 'sources',
+  ) => Promise<{
+    status: string
+    path?: string
+    json_path?: string
+    count?: number
+    copied?: number
+    missing?: string[]
+    error?: string
+  }>
   cancel_conversion: () => Promise<void>
   ai_tag_single: (task_id: number, input_path: string, start_time?: number, end_time?: number) => Promise<{ status: string }>
   ai_tag_all: (tasks: Record<string, unknown>[]) => Promise<{ status: string }>

@@ -48,6 +48,7 @@ const lastPackPath = ref('')
 const isAiTagging = ref(false)
 const isDraggingOver = ref(false)
 const showSettings = ref(false)
+const showExportMenu = ref(false)
 const isLogOpen = ref(false)
 const logs = ref<string[]>([])
 const logContainer = ref<HTMLElement | null>(null)
@@ -206,6 +207,7 @@ onMounted(async () => {
   // Close context menu on window click
   window.addEventListener('click', () => {
     contextMenu.value.visible = false
+    showExportMenu.value = false
   })
   window.addEventListener('keydown', onKeyDown)
 })
@@ -918,7 +920,8 @@ async function cancelConversion() {
   }
 }
 
-async function exportStickerList() {
+async function exportStickerList(mode: 'list' | 'sources') {
+  showExportMenu.value = false
   if (tasks.value.length === 0) return
   const payload = tasks.value.map((t) => ({
     input_path: t.inputPath,
@@ -943,16 +946,25 @@ async function exportStickerList() {
       payload,
       '',
       globalOptions.value.custom_output_dir || '',
+      mode,
     )
     if (res.status === 'ok' && res.path) {
-      appendLog(`📤 已导出贴纸列表 ${res.count} 项 -> ${res.path}`)
+      if (mode === 'sources') {
+        const copied = res.copied ?? 0
+        appendLog(`📤 已导出源文件+JSON：${res.count} 项，复制 ${copied} 个文件 -> ${res.path}`)
+        if (res.missing && res.missing.length > 0) {
+          appendLog(`⚠️ 有 ${res.missing.length} 个源文件缺失，已跳过`)
+        }
+      } else {
+        appendLog(`📤 已导出贴纸列表 ${res.count} 项 -> ${res.path}`)
+      }
     } else if (res.status === 'empty' && res.error === '已取消导出') {
-      appendLog('已取消导出列表')
+      appendLog('已取消导出')
     } else if (res.error) {
-      appendLog(`❌ 导出列表失败: ${res.error}`)
+      appendLog(`❌ 导出失败: ${res.error}`)
     }
   } catch (e) {
-    appendLog(`❌ 导出列表失败: ${e}`)
+    appendLog(`❌ 导出失败: ${e}`)
   }
 }
 
@@ -1451,14 +1463,38 @@ async function triggerAiTagAll() {
             >
               🚀 开始转换
             </button>
-            <button
-              @click="exportStickerList"
-              :disabled="tasks.length === 0 || isConverting"
-              class="shrink-0 px-3 py-2.5 rounded-lg bg-[#242730] hover:bg-[#2e333e] border border-[#333844] text-gray-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-              title="导出当前贴纸列表为 JSON，不进行转码"
-            >
-              📤 导出列表
-            </button>
+            <div class="relative shrink-0">
+              <button
+                @click.stop="showExportMenu = !showExportMenu"
+                :disabled="tasks.length === 0 || isConverting"
+                class="px-3 py-2.5 rounded-lg bg-[#242730] hover:bg-[#2e333e] border border-[#333844] text-gray-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                title="导出贴纸列表，不进行转码"
+              >
+                📤 导出
+              </button>
+              <div
+                v-if="showExportMenu"
+                class="absolute bottom-full right-0 mb-1.5 w-64 rounded-lg border border-[#333844] bg-[#1b1e26] shadow-xl overflow-hidden z-20"
+                @click.stop
+              >
+                <button
+                  type="button"
+                  class="w-full text-left px-3 py-2.5 hover:bg-[#252831] transition cursor-pointer"
+                  @click="exportStickerList('sources')"
+                >
+                  <div class="text-xs font-semibold text-white">源文件 + JSON</div>
+                  <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">复制原片到文件夹，并附带参数清单</div>
+                </button>
+                <button
+                  type="button"
+                  class="w-full text-left px-3 py-2.5 hover:bg-[#252831] border-t border-[#2a2e38] transition cursor-pointer"
+                  @click="exportStickerList('list')"
+                >
+                  <div class="text-xs font-semibold text-white">贴纸列表文件</div>
+                  <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">转换前的参数 JSON，不含源文件</div>
+                </button>
+              </div>
+            </div>
             <label class="shrink-0 flex items-center gap-1.5 cursor-pointer select-none" title="压缩包内额外写入 stickers.json，对应每个贴纸的 emoji 与 keywords">
               <input
                 v-model="globalOptions.pack_output"

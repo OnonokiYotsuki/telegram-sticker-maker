@@ -26,7 +26,9 @@ from core.pack_output import (
 )
 from core.sticker_list import (
     StickerListError,
+    default_bundle_name,
     default_list_name,
+    write_sticker_bundle,
     write_sticker_list,
 )
 from core.settings_store import default_output_dir, default_settings
@@ -254,12 +256,25 @@ class AppAPI:
         stickers: List[Dict[str, Any]],
         dest_path: str = "",
         directory: str = "",
+        mode: str = "list",
     ) -> Dict[str, Any]:
+        export_mode = "sources" if mode == "sources" else "list"
         try:
             dest = (dest_path or "").strip()
+            if export_mode == "sources":
+                if not dest:
+                    dest = self._resolve_bundle_dir(directory=directory)
+                result = write_sticker_bundle(dest, stickers)
+                missing = result.get("missing") or []
+                self._log(
+                    f"📤 已导出源文件+JSON：{result['count']} 项，复制 {result['copied']} 个文件 -> {result['path']}"
+                )
+                if missing:
+                    self._log(f"⚠️ 有 {len(missing)} 个源文件缺失，已跳过")
+                return {"status": "ok", **result}
             if not dest:
                 dest = self._resolve_list_path(directory=directory)
-            result = write_sticker_list(dest, stickers)
+            result = write_sticker_list(dest, stickers, export_mode="list")
             self._log(f"📤 已导出贴纸列表 {result['count']} 项 -> {result['path']}")
             return {"status": "ok", **result}
         except StickerListError as e:
@@ -268,6 +283,31 @@ class AppAPI:
         except Exception as e:
             self._log(f"❌ 导出列表失败: {e}")
             return {"status": "error", "error": str(e)}
+
+    def _resolve_bundle_dir(self, directory: str = "") -> str:
+        bundle_name = default_bundle_name()
+        if webview.windows:
+            suggested_dir = (directory or "").strip() or default_output_dir()
+            result = None
+            try:
+                os.makedirs(suggested_dir, exist_ok=True)
+                result = webview.windows[0].create_file_dialog(
+                    _file_dialog_type("FOLDER"),
+                    directory=suggested_dir,
+                )
+            except Exception:
+                result = None
+            if result:
+                chosen = result[0] if isinstance(result, (list, tuple)) else str(result)
+                if chosen:
+                    dest = os.path.join(os.path.abspath(chosen), bundle_name)
+                    os.makedirs(dest, exist_ok=True)
+                    return dest
+            raise StickerListError("已取消导出")
+        dest_dir = (directory or "").strip() or default_output_dir()
+        dest = os.path.join(os.path.abspath(dest_dir), bundle_name)
+        os.makedirs(dest, exist_ok=True)
+        return dest
 
     def _resolve_list_path(self, directory: str = "") -> str:
         if webview.windows:
