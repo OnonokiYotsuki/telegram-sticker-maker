@@ -471,16 +471,28 @@
               <!-- Actions -->
               <div class="flex flex-col space-y-1">
                 <button
-                  @click.stop="playClip(idx)"
+                  @click.stop="playClip(idx, 'once')"
                   :class="[
                     'p-1 rounded text-xs',
-                    isLooping && selectedClipIdx === idx
+                    isClipPlaying(idx, 'once')
                       ? 'text-emerald-400 bg-emerald-950/50 hover:bg-emerald-900/50'
                       : 'text-slate-400 hover:text-sky-400 hover:bg-slate-800'
                   ]"
-                  :title="isLooping && selectedClipIdx === idx ? '停止循环播放' : '循环播放此片段'"
+                  :title="isClipPlaying(idx, 'once') ? '停止播放' : '播放一次，到头停止'"
                 >
-                  {{ isLooping && selectedClipIdx === idx ? '⏸️' : '▶️' }}
+                  {{ isClipPlaying(idx, 'once') ? '⏸️' : '▶️' }}
+                </button>
+                <button
+                  @click.stop="playClip(idx, 'loop')"
+                  :class="[
+                    'p-1 rounded text-xs',
+                    isClipPlaying(idx, 'loop')
+                      ? 'text-emerald-400 bg-emerald-950/50 hover:bg-emerald-900/50'
+                      : 'text-slate-400 hover:text-sky-400 hover:bg-slate-800'
+                  ]"
+                  :title="isClipPlaying(idx, 'loop') ? '停止循环播放' : '循环播放此片段'"
+                >
+                  {{ isClipPlaying(idx, 'loop') ? '⏸️' : '🔁' }}
                 </button>
                 <button
                   @click.stop="deleteClip(idx)"
@@ -648,7 +660,7 @@ const cropOverlayRef = ref<any>(null)
 const isPlaying = ref(false)
 const isMuted = ref(false)
 const currentTime = ref(0)
-const isLooping = ref(false)
+const clipPlayMode = ref<'once' | 'loop' | null>(null)
 
 const smallStep = ref(0.5)
 const largeStep = ref(5.0)
@@ -961,9 +973,12 @@ const parseTime = (str: string): number | null => {
   return isNaN(val) ? null : val
 }
 
-const stopLooping = () => {
-  isLooping.value = false
+const stopClipPlayback = () => {
+  clipPlayMode.value = null
 }
+
+const isClipPlaying = (idx: number, mode: 'once' | 'loop') =>
+  clipPlayMode.value === mode && selectedClipIdx.value === idx && isPlaying.value
 
 const togglePlay = () => {
   if (!videoRef.value) return
@@ -971,7 +986,7 @@ const togglePlay = () => {
     videoRef.value.play()
   } else {
     videoRef.value.pause()
-    stopLooping()
+    stopClipPlayback()
   }
 }
 
@@ -1024,7 +1039,7 @@ const seekTo = (absolute: number) => {
 }
 
 const seekRelative = (delta: number) => {
-  stopLooping()
+  stopClipPlayback()
   const base = isReloading.value ? currentTime.value : playbackClock()
   seekTo(base + delta)
 }
@@ -1074,7 +1089,7 @@ const onTimelinePointerDown = (e: PointerEvent) => {
     return
   }
 
-  stopLooping()
+  stopClipPlayback()
   timelineAction.value = 'scrub'
   const hit = clips.value.findIndex((c) => t >= c.startTime && t <= c.endTime)
   if (hit >= 0 && hit !== selectedClipIdx.value) {
@@ -1151,10 +1166,19 @@ const syncPlaybackClock = () => {
   if (!videoRef.value || isReloading.value || isScrubbing.value) return
   currentTime.value = playbackClock()
 
-  if (isLooping.value) {
+  if (clipPlayMode.value) {
     const curClip = clips.value[selectedClipIdx.value]
     if (curClip && curClip.endTime > curClip.startTime) {
-      if (currentTime.value >= curClip.endTime || currentTime.value < curClip.startTime - 0.2) {
+      if (currentTime.value >= curClip.endTime) {
+        if (clipPlayMode.value === 'loop') {
+          seekTo(curClip.startTime)
+        } else {
+          clipPlayMode.value = null
+          pendingPlay.value = false
+          videoRef.value.pause()
+          seekTo(curClip.endTime)
+        }
+      } else if (currentTime.value < curClip.startTime - 0.2) {
         seekTo(curClip.startTime)
       }
     }
@@ -1369,14 +1393,14 @@ const selectClip = (idx: number) => {
   zoomToClip(curClip)
 }
 
-const playClip = (idx: number) => {
-  if (isLooping.value && selectedClipIdx.value === idx && videoRef.value && !videoRef.value.paused) {
+const playClip = (idx: number, mode: 'once' | 'loop') => {
+  if (clipPlayMode.value === mode && selectedClipIdx.value === idx && videoRef.value && !videoRef.value.paused) {
     videoRef.value.pause()
-    stopLooping()
+    stopClipPlayback()
     return
   }
   pendingPlay.value = true
-  isLooping.value = true
+  clipPlayMode.value = mode
   selectClip(idx)
   if (nativeRangeSeek.value) videoRef.value?.play()
 }
