@@ -108,8 +108,8 @@
                   class="text-[11px] truncate"
                   :class="inSelectedClip ? 'text-sky-300' : 'text-slate-500'"
                 >
-                  片段 {{ formatTime(selectedClip.startTime) }} – {{ formatTime(selectedClip.endTime) }}
-                  <span class="text-slate-500">({{ (selectedClip.endTime - selectedClip.startTime).toFixed(2) }}s)</span>
+                  片段 {{ formatTime(selectedClip.startTime) }} – {{ clipHasEnd(selectedClip) ? formatTime(selectedClip.endTime) : '未设终点' }}
+                  <span v-if="clipHasEnd(selectedClip)" class="text-slate-500">({{ (selectedClip.endTime! - selectedClip.startTime).toFixed(2) }}s)</span>
                 </span>
                 <span class="text-slate-500 text-right flex items-center justify-end gap-1.5 shrink-0">
                   <button
@@ -213,7 +213,7 @@
                   class="timeline-clip"
                   :class="{ 'is-active': idx === selectedClipIdx }"
                   :style="clipRangeStyle(clip)"
-                  :title="`片段 ${idx + 1}: ${formatTime(clip.startTime)} – ${formatTime(clip.endTime)}`"
+                  :title="clipRangeTitle(clip, idx)"
                 />
 
                 <div
@@ -455,13 +455,14 @@
                   <span class="text-slate-500">-</span>
                   <input
                     type="text"
-                    :value="formatTime(clip.endTime)"
+                    :value="clip.endTime == null ? '' : formatTime(clip.endTime)"
+                    placeholder="终点"
                     @change="onClipEndChange(idx, $event)"
-                    class="w-16 bg-[#11131a] border border-[#2b3040] rounded px-1 text-center text-slate-200 focus:border-sky-500 outline-none text-[11px]"
+                    class="w-16 bg-[#11131a] border border-[#2b3040] rounded px-1 text-center text-slate-200 placeholder:text-slate-600 focus:border-sky-500 outline-none text-[11px]"
                   />
                 </div>
                 <div class="text-[11px] text-slate-400 flex items-center space-x-2">
-                  <span class="font-semibold text-slate-300">{{ (clip.endTime - clip.startTime).toFixed(2) }}s</span>
+                  <span class="font-semibold text-slate-300">{{ clipDurationLabel(clip) }}</span>
                   <span v-if="clip.crop" class="text-sky-400 font-mono text-[10px] bg-sky-950/60 px-1 rounded border border-sky-800/40">
                     [✂️ {{ cropRadiusLabel(clip.cropRadius) }} {{ clip.crop[2] }}×{{ clip.crop[3] }}]
                   </span>
@@ -506,18 +507,13 @@
           </div>
 
           <!-- Add Clip Actions -->
-          <div class="p-3 border-t border-[#232731] grid grid-cols-2 gap-2">
+          <div class="p-3 border-t border-[#232731]">
             <button
               @click="addNewClip"
-              class="bg-sky-600 hover:bg-sky-500 text-white font-medium text-xs py-2 rounded flex items-center justify-center space-x-1 transition"
+              class="w-full bg-sky-600 hover:bg-sky-500 text-white font-medium text-xs py-2 rounded flex items-center justify-center space-x-1 transition"
+              title="从当前指针开始，终点留空，用 ] 打点"
             >
               <span>➕ 添加片段</span>
-            </button>
-            <button
-              @click="addNextClip"
-              class="bg-[#202530] hover:bg-[#282f3d] border border-[#333b4d] text-slate-200 text-xs py-2 rounded flex items-center justify-center space-x-1 transition"
-            >
-              <span>⚡ 顺延 (+2.5s)</span>
             </button>
           </div>
 
@@ -684,7 +680,7 @@ function resolveInitialClips(): ClipItem[] {
       id: c.id || `clip-${i + 1}`,
       startTime: c.startTime,
       endTime: c.endTime,
-      duration: Math.max(0.1, c.endTime - c.startTime),
+      duration: c.endTime != null ? Math.max(0.1, c.endTime - c.startTime) : 0,
       emoji: c.emoji ?? '',
       keywords: c.keywords,
       crop: c.crop,
@@ -726,10 +722,27 @@ const isScrubbing = computed(() => timelineAction.value === 'scrub')
 
 const clipThumbnails = ref<Record<string, string>>({})
 const selectedClip = computed(() => clips.value[selectedClipIdx.value] ?? null)
+
+function clipHasEnd(clip: ClipItem | null | undefined): clip is ClipItem & { endTime: number } {
+  return !!clip && clip.endTime != null && Number.isFinite(clip.endTime) && clip.endTime > clip.startTime
+}
+
+function clipDurationLabel(clip: ClipItem) {
+  if (!clipHasEnd(clip)) return '未设终点'
+  return `${(clip.endTime - clip.startTime).toFixed(2)}s`
+}
+
+function clipRangeTitle(clip: ClipItem, idx: number) {
+  const end = clipHasEnd(clip) ? formatTime(clip.endTime) : '未设终点'
+  return `片段 ${idx + 1}: ${formatTime(clip.startTime)} – ${end}`
+}
+
 const inSelectedClip = computed(() => {
   const clip = selectedClip.value
   if (!clip) return false
-  return currentTime.value >= clip.startTime - 0.001 && currentTime.value <= clip.endTime + 0.001
+  if (currentTime.value < clip.startTime - 0.001) return false
+  if (!clipHasEnd(clip)) return true
+  return currentTime.value <= clip.endTime + 0.001
 })
 const timelineDuration = computed(() => Math.max(0.0001, props.mediaInfo.duration || 0))
 const timelineViewStart = ref(0)
@@ -789,6 +802,11 @@ function timeToPct(t: number) {
 }
 
 function clipRangeStyle(clip: ClipItem) {
+  if (!clipHasEnd(clip)) {
+    const left = timeToPct(clip.startTime)
+    if (left < -2 || left > 102) return { display: 'none' }
+    return { left: `${left}%`, width: '2px' }
+  }
   const leftT = Math.max(clip.startTime, timelineViewStart.value)
   const rightT = Math.min(clip.endTime, timelineViewEnd.value)
   if (rightT <= leftT) return { display: 'none' }
@@ -800,6 +818,7 @@ function clipRangeStyle(clip: ClipItem) {
 function overviewClipStyle(clip: ClipItem) {
   const dur = timelineDuration.value
   const left = (clip.startTime / dur) * 100
+  if (!clipHasEnd(clip)) return { left: `${left}%`, width: '2px' }
   const width = Math.max(0.35, ((clip.endTime - clip.startTime) / dur) * 100)
   return { left: `${left}%`, width: `${width}%` }
 }
@@ -841,6 +860,12 @@ function zoomTimelineAt(pivot: number, factor: number) {
 
 function zoomToClip(clip: ClipItem | null | undefined) {
   if (!clip) return
+  if (!clipHasEnd(clip)) {
+    const pad = Math.max(1, viewSpan.value * 0.25)
+    clampTimelineView(clip.startTime - pad, clip.startTime + pad)
+    bumpFollowSuspend()
+    return
+  }
   const dur = Math.max(0.08, clip.endTime - clip.startTime)
   const pad = Math.max(dur * 0.6, 0.2)
   clampTimelineView(clip.startTime - pad, clip.endTime + pad)
@@ -1091,7 +1116,7 @@ const onTimelinePointerDown = (e: PointerEvent) => {
 
   stopClipPlayback()
   timelineAction.value = 'scrub'
-  const hit = clips.value.findIndex((c) => t >= c.startTime && t <= c.endTime)
+  const hit = clips.value.findIndex((c) => clipHasEnd(c) && t >= c.startTime && t <= c.endTime)
   if (hit >= 0 && hit !== selectedClipIdx.value) {
     selectedClipIdx.value = hit
     applyClipVisuals(clips.value[hit])
@@ -1124,7 +1149,7 @@ const onTimelinePointerLeave = () => {
 
 const onTimelineDblClick = (e: MouseEvent) => {
   const t = timeFromClientX(e.clientX)
-  const hit = clips.value.findIndex((c) => t >= c.startTime && t <= c.endTime)
+  const hit = clips.value.findIndex((c) => clipHasEnd(c) && t >= c.startTime && t <= c.endTime)
   if (hit >= 0) {
     selectedClipIdx.value = hit
     applyClipVisuals(clips.value[hit])
@@ -1168,7 +1193,7 @@ const syncPlaybackClock = () => {
 
   if (clipPlayMode.value) {
     const curClip = clips.value[selectedClipIdx.value]
-    if (curClip && curClip.endTime > curClip.startTime) {
+    if (curClip && clipHasEnd(curClip)) {
       if (currentTime.value >= curClip.endTime) {
         if (clipPlayMode.value === 'loop') {
           seekTo(curClip.startTime)
@@ -1352,10 +1377,12 @@ const setCurrentAsStart = () => {
   const curClip = clips.value[selectedClipIdx.value]
   if (curClip) {
     curClip.startTime = Number(currentTime.value.toFixed(3))
-    if (curClip.endTime <= curClip.startTime) {
-      curClip.endTime = Math.min(curClip.startTime + 2.5, props.mediaInfo.duration)
+    if (curClip.endTime != null && curClip.endTime <= curClip.startTime) {
+      curClip.endTime = null
+      curClip.duration = 0
+    } else if (curClip.endTime != null) {
+      curClip.duration = curClip.endTime - curClip.startTime
     }
-    curClip.duration = curClip.endTime - curClip.startTime
     refreshThumbnail(curClip)
   }
 }
@@ -1418,42 +1445,50 @@ const deleteClip = (idx: number) => {
 }
 
 const addNewClip = () => {
-  const last = clips.value[clips.value.length - 1]
-  const newStart = last ? Math.min(last.endTime, props.mediaInfo.duration) : 0
-  const newEnd = Math.min(newStart + 2.5, props.mediaInfo.duration)
+  const dur = props.mediaInfo.duration || 0
+  const newStart = Number(Math.max(0, Math.min(currentTime.value, dur)).toFixed(3))
   const newClip: ClipItem = {
     id: `clip-${Date.now()}`,
     startTime: newStart,
-    endTime: newEnd,
-    duration: newEnd - newStart,
+    endTime: null,
+    duration: 0,
     emoji: '',
     crop: cropActive.value && currentCrop.value ? [...currentCrop.value] : undefined,
-    cropRadius: cropActive.value ? cropRadius.value : 0
+    cropRadius: cropActive.value ? cropRadius.value : 0,
   }
   clips.value.push(newClip)
-  selectClip(clips.value.length - 1)
+  selectedClipIdx.value = clips.value.length - 1
+  applyClipVisuals(newClip)
   refreshThumbnail(newClip)
-}
-
-const addNextClip = () => {
-  addNewClip()
 }
 
 const onClipStartChange = (idx: number, val: string) => {
   const t = parseTime(val)
-  if (t !== null && clips.value[idx]) {
-    clips.value[idx].startTime = t
-    clips.value[idx].duration = Math.max(0, clips.value[idx].endTime - t)
-    refreshThumbnail(clips.value[idx])
+  const clip = clips.value[idx]
+  if (t === null || !clip) return
+  clip.startTime = t
+  if (clip.endTime != null && clip.endTime <= t) {
+    clip.endTime = null
+    clip.duration = 0
+  } else if (clip.endTime != null) {
+    clip.duration = clip.endTime - t
   }
+  refreshThumbnail(clip)
 }
 
 const onClipEndChange = (idx: number, e: Event) => {
   const el = e.target as HTMLInputElement
   const clip = clips.value[idx]
-  const t = parseTime(el.value)
-  if (!clip || t === null || t <= clip.startTime) {
-    el.value = formatTime(clip?.endTime ?? 0)
+  if (!clip) return
+  const raw = el.value.trim()
+  if (!raw) {
+    clip.endTime = null
+    clip.duration = 0
+    return
+  }
+  const t = parseTime(raw)
+  if (t === null || t <= clip.startTime) {
+    el.value = clip.endTime == null ? '' : formatTime(clip.endTime)
     return
   }
   clip.endTime = t
@@ -1509,8 +1544,8 @@ const saveClipSettings = () => {
 const confirmClips = () => {
   if (isVideo.value) {
     for (const c of clips.value) {
-      if (c.endTime <= c.startTime) {
-        alert(`时间区间无效：${formatTime(c.startTime)} - ${formatTime(c.endTime)}，结束时间必须大于开始时间`)
+      if (!clipHasEnd(c)) {
+        alert(`时间区间无效：请为片段设置结束时间（起点 ${formatTime(c.startTime)}）`)
         return
       }
     }

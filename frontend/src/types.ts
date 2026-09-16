@@ -155,7 +155,7 @@ export interface ImportedSticker {
 export interface ClipItem {
   id: string
   startTime: number
-  endTime: number
+  endTime: number | null
   duration: number
   emoji: string
   keywords?: string

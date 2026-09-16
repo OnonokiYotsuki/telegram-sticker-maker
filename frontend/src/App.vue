@@ -1009,8 +1009,11 @@ const clipModalFocusIdx = computed(() => {
 function applyClipToTask(task: TaskItem, clip: ClipItem, groupId: string) {
   if (task.mediaInfo.is_video) {
     task.startTime = clip.startTime
-    task.endTime = clip.endTime
-    task.clipLabel = `[${clip.startTime.toFixed(3)}s - ${clip.endTime.toFixed(3)}s]`
+    task.endTime = clip.endTime ?? undefined
+    task.clipLabel =
+      clip.endTime != null
+        ? `[${clip.startTime.toFixed(3)}s - ${clip.endTime.toFixed(3)}s]`
+        : `[${clip.startTime.toFixed(3)}s - ]`
   }
   task.crop = clip.crop
   task.cropRadius = clip.cropRadius
@@ -1030,11 +1033,11 @@ function createTaskFromClip(base: TaskItem, clip: ClipItem, groupId: string): Ta
     emoji: clip.emoji || base.emoji,
     keywords: clip.keywords ?? base.keywords ?? '',
     index: 0,
-    clipLabel: base.mediaInfo.is_video
+    clipLabel: base.mediaInfo.is_video && clip.endTime != null
       ? `[${clip.startTime.toFixed(3)}s - ${clip.endTime.toFixed(3)}s]`
       : undefined,
     startTime: base.mediaInfo.is_video ? clip.startTime : undefined,
-    endTime: base.mediaInfo.is_video ? clip.endTime : undefined,
+    endTime: base.mediaInfo.is_video ? clip.endTime ?? undefined : undefined,
     crop: clip.crop,
     cropRadius: clip.cropRadius,
     clipGroupId: groupId,
