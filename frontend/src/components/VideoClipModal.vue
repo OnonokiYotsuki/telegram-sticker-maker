@@ -1,6 +1,6 @@
 <template>
-  <div data-skip-deselect class="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-    <div class="bg-[#141720] border border-[#262a35] rounded-xl w-full max-w-[1240px] h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+  <div data-skip-deselect class="fixed inset-0 z-50 bg-[#141720] flex">
+    <div class="bg-[#141720] w-full h-full flex flex-col overflow-hidden">
       
       <!-- Top Bar -->
       <div class="flex items-center justify-between px-5 py-3 border-b border-[#232731] bg-[#171922] gap-3">
