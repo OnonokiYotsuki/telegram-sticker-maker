@@ -54,10 +54,18 @@ class PackEntry:
     emoji: str = ""
     keywords: tuple[str, ...] = ()
     arcname: str = ""
+    crop_radius: float = 0.0
 
     def __post_init__(self):
         object.__setattr__(self, "emoji", (self.emoji or "").strip())
         object.__setattr__(self, "keywords", normalize_keywords(self.keywords))
+        try:
+            radius = float(self.crop_radius)
+        except (TypeError, ValueError):
+            radius = 0.0
+        if radius != radius:
+            radius = 0.0
+        object.__setattr__(self, "crop_radius", max(0.0, min(1.0, radius)))
 
 
 class PackError(ValueError):
@@ -113,13 +121,14 @@ def resolve_entries(
 def build_stickers_manifest(entries: Iterable[PackEntry]) -> dict:
     stickers = []
     for item in entries:
-        stickers.append(
-            {
-                "file": item.arcname,
-                "emoji": item.emoji or "",
-                "keywords": list(item.keywords),
-            }
-        )
+        row: dict[str, Any] = {
+            "file": item.arcname,
+            "emoji": item.emoji or "",
+            "keywords": list(item.keywords),
+        }
+        if item.crop_radius > 0.001:
+            row["crop_radius"] = round(item.crop_radius, 4)
+        stickers.append(row)
     return {"stickers": stickers}
 
 

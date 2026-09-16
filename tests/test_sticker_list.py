@@ -19,6 +19,7 @@ from core.sticker_list import (
     default_bundle_zip_name,
     default_list_name,
     export_prepared_stickers,
+    extract_source_clip,
     import_sticker_bundle,
     looks_like_import_path,
     prepared_output_ext,
@@ -110,7 +111,7 @@ def test_write_sticker_bundle_copies_unique_sources(tmp_path):
 def test_prepared_output_ext_keeps_source_video_container():
     assert prepared_output_ext(r"D:\a\clip.mkv", is_video=True, crop=None, radius=0) == ".mkv"
     assert prepared_output_ext(r"D:\a\clip.mkv", is_video=True, crop=[0, 0, 100, 100], radius=0) == ".mkv"
-    assert prepared_output_ext(r"D:\a\clip.mkv", is_video=True, crop=[0, 0, 100, 100], radius=1) == ".mkv"
+    assert prepared_output_ext(r"D:\a\clip.mkv", is_video=True, crop=[0, 0, 100, 100], radius=1) == ".webm"
     assert prepared_output_ext(r"D:\a\clip.mp4", is_video=True, crop=[0, 0, 100, 100], radius=0) == ".mp4"
 
 
@@ -251,6 +252,94 @@ def test_export_prepared_applies_video_crop(tmp_path):
     info = MediaAnalyzer.analyze(str(out))
     assert info.width == 160
     assert info.height == 120
+
+
+def test_export_prepared_video_radius_keeps_alpha_and_manifest(tmp_path):
+    src = str(tmp_path / "sample.mkv")
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=1:size=320x240:rate=12",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            src,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    dest = tmp_path / "out"
+    export_prepared_stickers(
+        [
+            {
+                "input_path": src,
+                "emoji": "",
+                "is_video": True,
+                "index": 1,
+                "start_time": 0,
+                "end_time": 1,
+                "duration": 1,
+                "crop": [0, 0, 240, 240],
+                "crop_radius": 1,
+            }
+        ],
+        str(dest),
+    )
+    out = dest / "001.webm"
+    assert out.is_file()
+    info = MediaAnalyzer.analyze(str(out))
+    assert info.has_alpha is True
+    manifest = json.loads((dest / STICKERS_JSON_NAME).read_text(encoding="utf-8"))
+    assert manifest["stickers"][0]["crop_radius"] == 1.0
+    imported = import_sticker_bundle(str(dest))
+    assert imported["stickers"][0]["crop_radius"] == 1.0
+    assert imported["stickers"][0]["input_path"].endswith("001.webm")
+
+
+def test_analyze_legacy_circular_mkv_keeps_alpha(tmp_path):
+    src = str(tmp_path / "sample.mkv")
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=1:size=320x240:rate=12",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            src,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    out = str(tmp_path / "001.mkv")
+    extract_source_clip(
+        src,
+        out,
+        is_video=True,
+        start_time=0,
+        end_time=1,
+        duration=1,
+        crop=[0, 0, 240, 240],
+        crop_radius=1.0,
+    )
+    info = MediaAnalyzer.analyze(out)
+    assert info.has_alpha is True
+    from core.encode_plan import plan_video
+    from core.encoder import EncodeOptions
+
+    plan = plan_video(info, EncodeOptions())
+    assert plan.pix_fmt == "yuva420p"
 
 
 def test_api_export_sticker_list_to_path(tmp_path):

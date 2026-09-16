@@ -258,6 +258,8 @@ def prepared_output_ext(
 ) -> str:
     orig = os.path.splitext(src)[1] or ".bin"
     if is_video:
+        if crop and normalize_crop_radius(radius) > 0.001:
+            return ".webm"
         return orig
     if not crop:
         return orig
@@ -491,6 +493,7 @@ def export_prepared_stickers(
                 emoji=emoji,
                 keywords=raw.get("keywords"),
                 arcname=name,
+                crop_radius=radius,
             )
         )
         if progress_callback:
@@ -635,12 +638,16 @@ def _normalize_pack_item(raw: Mapping[str, Any], root: str) -> Optional[dict[str
     src = resolve_import_media_path(root, str(raw.get("file") or raw.get("input_path") or ""))
     if not src:
         return None
-    return {
+    item: dict[str, Any] = {
         "input_path": src,
         "file_name": str(raw.get("file") or os.path.basename(src)),
         "emoji": str(raw.get("emoji") or ""),
         "keywords": keywords_to_str(raw.get("keywords")),
     }
+    radius = _as_optional_float(raw.get("crop_radius"))
+    if radius is not None and radius > 0.001:
+        item["crop_radius"] = max(0.0, min(1.0, radius))
+    return item
 
 
 def import_sticker_bundle(path: str) -> dict[str, Any]:

@@ -34,6 +34,28 @@ def pix_fmt_has_alpha(pix_fmt: str) -> bool:
     return any(token in p for token in _ALPHA_PIX_TOKENS)
 
 
+def stream_has_alpha(stream: dict) -> bool:
+    """VP9 in MKV/WebM often reports pix_fmt=yuv420p and puts alpha in tags."""
+    if pix_fmt_has_alpha(str(stream.get("pix_fmt") or "")):
+        return True
+    tags = stream.get("tags") or {}
+    if not isinstance(tags, dict):
+        tags = {}
+    for key, raw in tags.items():
+        if str(key).lower() != "alpha_mode":
+            continue
+        val = str(raw).strip().lower()
+        if val in ("1", "true", "yes", "on"):
+            return True
+    for item in stream.get("side_data_list") or []:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("side_data_type") or item.get("type") or "").lower()
+        if "alpha" in kind:
+            return True
+    return False
+
+
 def _parse_float(value) -> Optional[float]:
     if value is None or value == "":
         return None
@@ -145,7 +167,7 @@ class MediaAnalyzer:
         duration_val = _parse_float(video_stream.get("duration")) or _parse_float(
             format_info.get("duration")
         ) or 0.0
-        has_alpha = pix_fmt_has_alpha(video_stream.get("pix_fmt", ""))
+        has_alpha = stream_has_alpha(video_stream)
 
         codec_name = video_stream.get("codec_name", "")
         format_name = format_info.get("format_name", "")
