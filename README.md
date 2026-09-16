@@ -91,7 +91,7 @@ uv run pytest
 
 ## 使用流程
 
-1. **导入**：把文件或文件夹拖进窗口，或点「添加文件 / 添加文件夹」。也可点「导入」，或直接拖入之前导出的 zip / JSON。
+1. **导入**：把文件或文件夹拖进窗口，或点「添加文件 / 添加文件夹」。也可点「导入」，或直接拖入之前导出的 zip / JSON。任务列表会自动保存到本机配置目录，关掉再开会接着做（源文件仍须在原位置）。
 2. **规格**：右侧选择「标准贴纸 512px」或「自定义表情 100px」，再选编码预设。
 3. **裁切（可选）**：点条目上的剪刀，或工具栏「截取视频片段」，打开全窗口预览。
    - 时间：拖时间轴、滚轮缩放 / 平移、`[` / `]` 打点。
@@ -238,6 +238,7 @@ sticker_maker/
 │   ├── crop_shape.py
 │   ├── pack_output.py       # ZIP / 时间戳文件夹 + stickers.json
 │   ├── sticker_list.py      # 贴纸列表导出 / 导入（不转码）
+│   ├── session_store.py     # 关闭后再开的任务进度
 │   ├── proxy_manager.py     # 480p 预览代理缓存
 │   ├── ai_tagger.py
 │   └── settings_store.py
@@ -273,6 +274,9 @@ FFmpeg 未装，或新开的终端还没刷新 `PATH`。装完重开终端，再
 
 **AI 一直失败**  
 检查 Base URL 是否带 `/v1`、模型是否支持 vision、密钥是否有效。
+
+**关掉再开，上次的列表还在吗**  
+会。任务、裁切、Emoji、关键词会写到 `%USERPROFILE%\.config\telegram_sticker_maker\session.json`（macOS / Linux 为 `~/.config/telegram_sticker_maker/`）。源文件被移动或删除的项会跳过。换电脑请仍用「导出」带走原片。
 
 **导入后缺文件**  
 「源文件 + JSON」依赖当时的绝对路径；换机器请用带原片的 zip / 文件夹导出。缺失项会跳过并写日志。

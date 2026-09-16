@@ -37,6 +37,8 @@ from core.sticker_list import (
     looks_like_import_path,
     write_sticker_bundle,
 )
+from core.session_store import load_session as load_app_session
+from core.session_store import save_session as save_app_session
 from core.settings_store import default_output_dir, default_settings
 from core.settings_store import load_settings as load_app_settings
 from core.settings_store import save_settings as save_app_settings
@@ -72,6 +74,7 @@ class AppAPI:
         self._js_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=self.CONVERT_WORKERS)
         self.stream_server = get_stream_server()
+        self._session_stickers: Optional[List[Dict[str, Any]]] = None
 
     def _eval_js(self, js_code: str):
         if not webview.windows:
@@ -311,6 +314,26 @@ class AppAPI:
             return {"status": "ok"}
         except Exception as e:
             return {"error": str(e)}
+
+    def save_session(self, stickers: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        rows = list(stickers) if stickers is not None else self._session_stickers
+        if rows is None:
+            return {"status": "skipped", "count": 0}
+        self._session_stickers = rows
+        try:
+            result = save_app_session(rows)
+            return {"status": "ok", **result}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
+    def load_session(self) -> Dict[str, Any]:
+        try:
+            return load_app_session()
+        except Exception as e:
+            return {"status": "error", "stickers": [], "missing": [], "count": 0, "error": str(e)}
+
+    def flush_session(self) -> Dict[str, Any]:
+        return self.save_session(None)
 
     def cancel_conversion(self):
         self._canceled = True

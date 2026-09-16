@@ -124,6 +124,14 @@ export interface AppAPI {
     missing?: string[]
     error?: string
   }>
+  save_session: (stickers: Record<string, unknown>[]) => Promise<{ status: string; count?: number; error?: string }>
+  load_session: () => Promise<{
+    status: string
+    stickers?: ImportedSticker[]
+    missing?: string[]
+    count?: number
+    error?: string
+  }>
   cancel_conversion: () => Promise<void>
   ai_tag_single: (task_id: number, input_path: string, start_time?: number, end_time?: number) => Promise<{ status: string }>
   ai_tag_all: (tasks: Record<string, unknown>[]) => Promise<{ status: string }>

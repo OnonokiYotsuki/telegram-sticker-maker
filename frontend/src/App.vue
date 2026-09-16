@@ -46,13 +46,16 @@ const proxyCacheHint = ref('')
 const isConverting = ref(false)
 const isExporting = ref(false)
 const isImporting = ref(false)
+const isRestoring = ref(false)
 const exportHint = ref('')
 const importHint = ref('')
 const importDone = ref(0)
 const importTotal = ref(0)
 const lastPackPath = ref('')
 const isAiTagging = ref(false)
-const isBusy = computed(() => isConverting.value || isExporting.value || isImporting.value)
+const isBusy = computed(
+  () => isConverting.value || isExporting.value || isImporting.value || isRestoring.value,
+)
 let importCanceled = false
 const isDraggingOver = ref(false)
 const showSettings = ref(false)
@@ -67,6 +70,55 @@ const activeClipTask = ref<TaskItem | null>(null)
 const keywordsTask = ref<TaskItem | null>(null)
 
 let nextTaskId = 1
+let sessionReady = false
+let lastSessionJson = ''
+let sessionTimer: ReturnType<typeof setTimeout> | null = null
+
+function sessionPayload() {
+  return tasks.value.map((t) => ({
+    input_path: t.inputPath,
+    file_name: t.mediaInfo.file_name,
+    is_video: t.mediaInfo.is_video,
+    emoji: t.emoji || '',
+    keywords: t.keywords || '',
+    start_time: t.startTime,
+    end_time: t.endTime,
+    crop: t.crop,
+    crop_radius: t.cropRadius || 0,
+    clip_group_id: t.clipGroupId,
+    clip_id: t.clipId,
+    clip_label: t.clipLabel,
+    index: t.index,
+  }))
+}
+
+function persistSession(immediate = false) {
+  if (!sessionReady) return
+  const payload = sessionPayload()
+  const json = JSON.stringify(payload)
+  if (json === lastSessionJson) return
+  if (sessionTimer != null) {
+    clearTimeout(sessionTimer)
+    sessionTimer = null
+  }
+  const write = () => {
+    lastSessionJson = json
+    const api = window.pywebview?.api
+    if (api?.save_session) void api.save_session(payload)
+  }
+  if (immediate) write()
+  else sessionTimer = setTimeout(write, 250)
+}
+
+function flushSession() {
+  persistSession(true)
+}
+
+watch(
+  tasks,
+  () => persistSession(false),
+  { deep: true },
+)
 
 const editingEmojiTaskId = ref<number | null>(null)
 const emojiInputRef = ref<HTMLInputElement | null>(null)
@@ -142,24 +194,29 @@ const taskCounts = computed(() => {
 const overallDone = computed(() => taskCounts.value.success + taskCounts.value.failed)
 
 const jobLabel = computed(() => {
+  if (isRestoring.value) return '正在恢复'
   if (isImporting.value) return '正在导入'
   if (isExporting.value) return '正在导出'
   if (isConverting.value) return '正在转码'
   return ''
 })
 
-const jobDone = computed(() => (isImporting.value ? importDone.value : overallDone.value))
+const jobDone = computed(() =>
+  isImporting.value || isRestoring.value ? importDone.value : overallDone.value,
+)
 
-const jobTotal = computed(() => (isImporting.value ? importTotal.value : taskCounts.value.total))
+const jobTotal = computed(() =>
+  isImporting.value || isRestoring.value ? importTotal.value : taskCounts.value.total,
+)
 
 const jobHint = computed(() => {
-  if (isImporting.value) return importHint.value
+  if (isImporting.value || isRestoring.value) return importHint.value
   if (isExporting.value) return exportHint.value
   return ''
 })
 
 const overallProgress = computed(() => {
-  if (isImporting.value) {
+  if (isImporting.value || isRestoring.value) {
     if (!importTotal.value) return 0
     return Math.max(0, Math.min(100, Math.round((importDone.value / importTotal.value) * 100)))
   }
@@ -170,6 +227,10 @@ const overallProgress = computed(() => {
 })
 
 const statusSummaryText = computed(() => {
+  if (isRestoring.value) {
+    const hint = importHint.value ? ` · ${importHint.value}` : ''
+    return `正在恢复: ${importDone.value} 完成 / 共 ${importTotal.value} 项${hint}`
+  }
   if (isImporting.value) {
     const hint = importHint.value ? ` · ${importHint.value}` : ''
     return `正在导入: ${importDone.value} 完成 / 共 ${importTotal.value} 项${hint}`
@@ -258,10 +319,13 @@ onMounted(async () => {
     showExportMenu.value = false
   })
   window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('pagehide', flushSession)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeyDown)
+  window.removeEventListener('pagehide', flushSession)
+  flushSession()
 })
 
 function placeExportMenu() {
@@ -406,8 +470,53 @@ async function bootApi() {
       }
     }
     appendLog('🚀 Telegram Sticker Maker 已准备就绪')
+    await restoreSession()
   } catch (e) {
     console.error('Error initializing API:', e)
+    sessionReady = true
+  }
+}
+
+async function restoreSession() {
+  const api = window.pywebview?.api
+  if (!api?.load_session) {
+    sessionReady = true
+    return
+  }
+  try {
+    const res = await api.load_session()
+    const stickers = res.stickers || []
+    const missing = res.missing || []
+    if (res.status === 'ok' && stickers.length > 0) {
+      isRestoring.value = true
+      importCanceled = false
+      importHint.value = '正在读取上次进度...'
+      importDone.value = 0
+      importTotal.value = stickers.length
+      const before = tasks.value.length
+      await addImportedStickers(stickers)
+      const added = tasks.value.length - before
+      if (importCanceled) {
+        appendLog(added > 0 ? `已停止恢复，已加入 ${added} 项` : '已停止恢复')
+      } else {
+        appendLog(`📂 已恢复上次进度：${added} 项`)
+      }
+      if (missing.length > 0) {
+        appendLog(`⚠️ 有 ${missing.length} 个源文件找不到，已跳过（可能被移动或删除）`)
+      }
+    } else if (missing.length > 0) {
+      appendLog(`⚠️ 上次进度中的 ${missing.length} 个源文件找不到，已跳过`)
+    }
+  } catch (e) {
+    appendLog(`⚠️ 恢复上次进度失败: ${e}`)
+  } finally {
+    isRestoring.value = false
+    importHint.value = ''
+    importDone.value = 0
+    importTotal.value = 0
+    sessionReady = true
+    lastSessionJson = ''
+    persistSession(true)
   }
 }
 
@@ -1411,10 +1520,10 @@ async function triggerAiTagAll() {
             v-if="tasks.length === 0"
             class="flex-1 border-2 border-dashed border-[#282b35] hover:border-[#24a1de]/60 rounded-xl flex flex-col items-center justify-center p-8 gap-3 bg-[#16181d]/40 hover:bg-[#24a1de]/5 transition group"
           >
-            <template v-if="isImporting">
+            <template v-if="isImporting || isRestoring">
               <span class="inline-block w-8 h-8 border-2 border-[#24a1de]/30 border-t-[#24a1de] rounded-full animate-spin motion-reduce:animate-none"></span>
-              <h3 class="text-base font-bold text-white">正在导入贴纸列表</h3>
-              <p class="text-xs text-[#9ca3af] max-w-sm text-center truncate">{{ importHint || '准备导入...' }}</p>
+              <h3 class="text-base font-bold text-white">{{ isRestoring ? '正在恢复上次进度' : '正在导入贴纸列表' }}</h3>
+              <p class="text-xs text-[#9ca3af] max-w-sm text-center truncate">{{ importHint || (isRestoring ? '正在读取上次进度...' : '准备导入...') }}</p>
               <div class="w-56 h-1.5 bg-[#20232b] rounded-full overflow-hidden">
                 <div
                   class="h-full bg-[#24a1de] transition-all duration-150"

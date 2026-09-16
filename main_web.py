@@ -42,8 +42,20 @@ def main():
         background_color="#0f1117",
     )
 
+    def on_started():
+        if not webview.windows:
+            return
+
+        def on_closing():
+            try:
+                api.flush_session()
+            except Exception:
+                pass
+
+        webview.windows[0].events.closing += on_closing
+
     # 4. Start pywebview GUI loop
-    webview.start(debug=args.dev)
+    webview.start(on_started, debug=args.dev)
 
 
 if __name__ == "__main__":
