@@ -52,6 +52,8 @@ const isBusy = computed(() => isConverting.value || isExporting.value)
 const isDraggingOver = ref(false)
 const showSettings = ref(false)
 const showExportMenu = ref(false)
+const exportBtnRef = ref<HTMLButtonElement | null>(null)
+const exportMenuPos = ref({ top: 0, left: 0 })
 const isLogOpen = ref(false)
 const logs = ref<string[]>([])
 const logContainer = ref<HTMLElement | null>(null)
@@ -231,6 +233,28 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeyDown)
 })
+
+function placeExportMenu() {
+  const btn = exportBtnRef.value
+  if (!btn) return
+  const r = btn.getBoundingClientRect()
+  const menuWidth = 256
+  const menuHeight = 112
+  const gap = 6
+  const left = Math.min(Math.max(8, r.right - menuWidth), window.innerWidth - menuWidth - 8)
+  const above = r.top - menuHeight - gap
+  const top = above >= 8 ? above : r.bottom + gap
+  exportMenuPos.value = { top, left }
+}
+
+function toggleExportMenu() {
+  if (showExportMenu.value) {
+    showExportMenu.value = false
+    return
+  }
+  placeExportMenu()
+  showExportMenu.value = true
+}
 
 function appendLog(msg: string) {
   const time = new Date().toLocaleTimeString()
@@ -1538,7 +1562,7 @@ async function triggerAiTagAll() {
         </div>
 
         <!-- Right Bottom Action Buttons (Faithful to PySide6 MainWindow) -->
-        <div class="space-y-2 pt-2 border-t border-[#252831] shrink-0">
+        <div class="relative z-40 space-y-2 pt-2 border-t border-[#252831] shrink-0">
           <div
             v-if="isBusy"
             class="rounded-lg border border-[#333844] bg-[#15171c] px-3 py-2 space-y-1.5"
@@ -1570,35 +1594,14 @@ async function triggerAiTagAll() {
             </button>
             <div class="relative shrink-0">
               <button
-                @click.stop="showExportMenu = !showExportMenu"
+                ref="exportBtnRef"
+                @click.stop="toggleExportMenu"
                 :disabled="tasks.length === 0 || isBusy"
                 class="px-3 py-2.5 rounded-lg bg-[#242730] hover:bg-[#2e333e] border border-[#333844] text-gray-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 title="导出贴纸列表，不进行转码"
               >
                 {{ isExporting ? '导出中...' : '📤 导出' }}
               </button>
-              <div
-                v-if="showExportMenu"
-                class="absolute bottom-full right-0 mb-1.5 w-64 rounded-lg border border-[#333844] bg-[#1b1e26] shadow-xl overflow-hidden z-20"
-                @click.stop
-              >
-                <button
-                  type="button"
-                  class="w-full text-left px-3 py-2.5 hover:bg-[#252831] transition cursor-pointer"
-                  @click="exportStickerList('sources')"
-                >
-                  <div class="text-xs font-semibold text-white">源文件 + JSON</div>
-                  <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">复制原片到文件夹，并附带参数清单</div>
-                </button>
-                <button
-                  type="button"
-                  class="w-full text-left px-3 py-2.5 hover:bg-[#252831] border-t border-[#2a2e38] transition cursor-pointer"
-                  @click="exportStickerList('list')"
-                >
-                  <div class="text-xs font-semibold text-white">贴纸列表文件</div>
-                  <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">按转换结果输出已裁切的源文件，不压成贴纸码率</div>
-                </button>
-              </div>
             </div>
             <label class="shrink-0 flex items-center gap-1.5 cursor-pointer select-none" title="压缩包内额外写入 stickers.json，对应每个贴纸的 emoji 与 keywords">
               <input
@@ -1672,6 +1675,32 @@ async function triggerAiTagAll() {
         </div>
       </div>
     </div>
+
+    <Teleport to="body">
+    <div
+      v-if="showExportMenu"
+      :style="{ top: `${exportMenuPos.top}px`, left: `${exportMenuPos.left}px` }"
+      class="fixed z-[100] w-64 rounded-lg border border-[#333844] bg-[#1b1e26] shadow-xl overflow-hidden"
+      @click.stop
+    >
+      <button
+        type="button"
+        class="w-full text-left px-3 py-2.5 hover:bg-[#252831] transition cursor-pointer"
+        @click="exportStickerList('sources')"
+      >
+        <div class="text-xs font-semibold text-white">源文件 + JSON</div>
+        <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">复制原片到文件夹，并附带参数清单</div>
+      </button>
+      <button
+        type="button"
+        class="w-full text-left px-3 py-2.5 hover:bg-[#252831] border-t border-[#2a2e38] transition cursor-pointer"
+        @click="exportStickerList('list')"
+      >
+        <div class="text-xs font-semibold text-white">贴纸列表文件</div>
+        <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">按转换结果输出已裁切的源文件，不压成贴纸码率</div>
+      </button>
+    </div>
+    </Teleport>
 
     <!-- Custom Right-Click Context Menu -->
     <div
