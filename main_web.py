@@ -36,9 +36,9 @@ def main():
         title="Telegram Sticker Maker - 贴纸转换工具",
         url=target_url,
         js_api=api,
-        width=1200,
+        width=1500,
         height=820,
-        min_size=(980, 640),
+        min_size=(1180, 640),
         background_color="#0f1117",
     )
 
