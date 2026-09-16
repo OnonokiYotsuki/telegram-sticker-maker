@@ -73,6 +73,28 @@ def default_zip_name(now: Optional[datetime] = None) -> str:
     return f"TG_Stickers_{stamp}.zip"
 
 
+def default_pack_dir_name(now: Optional[datetime] = None) -> str:
+    return os.path.splitext(default_zip_name(now))[0]
+
+
+def unique_output_dir(parent: str, name: str = "") -> str:
+    """Create `parent/name`, appending _2, _3... if the path already exists."""
+    parent = os.path.abspath(parent or ".")
+    os.makedirs(parent, exist_ok=True)
+    folder = (name or "").strip() or default_pack_dir_name()
+    dest = os.path.join(parent, folder)
+    if not os.path.exists(dest):
+        os.makedirs(dest)
+        return dest
+    i = 2
+    while True:
+        candidate = os.path.join(parent, f"{folder}_{i}")
+        if not os.path.exists(candidate):
+            os.makedirs(candidate)
+            return candidate
+        i += 1
+
+
 def unique_arcname(name: str, used: set[str]) -> str:
     base = os.path.basename(name.replace("\\", "/")).strip() or "sticker"
     if base not in used:

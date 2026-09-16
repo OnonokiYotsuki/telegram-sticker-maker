@@ -17,12 +17,16 @@ from core.ai_tagger import AIEmojiConfig, AIEmojiTagger
 from core.analyzer import MediaAnalyzer
 from core.encoder import EncodeOptions, StickerEncoder
 from core.pack_output import (
+    STICKERS_JSON_NAME,
     PackEntry,
     PackError,
+    build_stickers_manifest,
+    default_pack_dir_name,
     default_zip_name,
     normalize_keywords,
     pack_stickers,
     unique_arcname,
+    unique_output_dir,
 )
 from core.sticker_list import (
     StickerListError,
@@ -514,8 +518,8 @@ class AppAPI:
                 progress_callback=progress_callback,
                 cancel_check=cancel_check,
             )
-        os.makedirs(out_dir, exist_ok=True)
-        return export_prepared_stickers(stickers, out_dir, **extra)
+        dest = unique_output_dir(out_dir, default_pack_dir_name())
+        return export_prepared_stickers(stickers, dest, **extra)
 
     def _export_prepared_same_dir(
         self,
@@ -536,6 +540,7 @@ class AppAPI:
         total = 0
         missing: List[str] = []
         last_path = ""
+        stamp = default_pack_dir_name()
         for folder, rows in grouped.items():
             def make_cb(base: int):
                 def cb(index: int, _n: int, item: Dict[str, Any], **kwargs: Any) -> None:
@@ -543,9 +548,10 @@ class AppAPI:
                         progress_callback(base + index, total_items, item, **kwargs)
                 return cb
 
+            dest = unique_output_dir(folder, stamp)
             result = export_prepared_stickers(
                 rows,
-                folder,
+                dest,
                 progress_callback=make_cb(offset) if progress_callback else None,
                 cancel_check=cancel_check,
             )
@@ -662,6 +668,55 @@ class AppAPI:
             staged.append(item)
         return staging, staged
 
+    def _relocate_outputs_to_dirs(self, tasks: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[str]]:
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for task in tasks:
+            path = str(task.get("output_path") or "").strip()
+            parent = os.path.dirname(os.path.abspath(path)) if path else default_output_dir()
+            grouped.setdefault(parent, []).append(task)
+        stamp = default_pack_dir_name()
+        staged: List[Dict[str, Any]] = []
+        folders: List[str] = []
+        for parent, rows in grouped.items():
+            dest = unique_output_dir(parent, stamp)
+            folders.append(dest)
+            used: set[str] = {STICKERS_JSON_NAME}
+            for task in rows:
+                item = dict(task)
+                name = unique_arcname(
+                    os.path.basename(str(item.get("output_path") or "")) or "sticker.webm",
+                    used,
+                )
+                item["output_path"] = os.path.join(dest, name)
+                staged.append(item)
+        return staged, folders
+
+    def _write_folder_manifest(self, dest_dir: str, successes: List[Dict[str, Any]]) -> None:
+        entries = [
+            PackEntry(
+                path=str(item.get("path") or ""),
+                emoji=str(item.get("emoji") or ""),
+                keywords=normalize_keywords(item.get("keywords")),
+                arcname=os.path.basename(str(item.get("path") or "")),
+            )
+            for item in successes
+            if str(item.get("path") or "").strip()
+        ]
+        if not entries:
+            return
+        manifest_path = os.path.join(dest_dir, STICKERS_JSON_NAME)
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            json.dump(build_stickers_manifest(entries), fh, ensure_ascii=False, indent=2)
+            fh.write("\n")
+
+    def _remove_empty_dirs(self, folders: List[str]) -> None:
+        for folder in folders:
+            try:
+                if os.path.isdir(folder) and not os.listdir(folder):
+                    os.rmdir(folder)
+            except OSError:
+                pass
+
     def _copy_pack_fallback(self, successes: List[Dict[str, Any]]) -> None:
         for item in successes:
             src = item.get("path") or ""
@@ -678,10 +733,13 @@ class AppAPI:
         self._log(f">>> 开始执行 {len(tasks)} 个转换任务（最多 {self.CONVERT_WORKERS} 路并行）...")
         pack_output = bool(global_options.get("pack_output", True))
         staging = None
+        loose_folders: List[str] = []
         work_tasks = tasks
         try:
             if pack_output:
                 staging, work_tasks = self._stage_pack_tasks(tasks)
+            else:
+                work_tasks, loose_folders = self._relocate_outputs_to_dirs(tasks)
             futures = [
                 self._executor.submit(self._convert_one, task, global_options)
                 for task in work_tasks
@@ -717,6 +775,20 @@ class AppAPI:
                     self._log(f"❌ 打包失败，改为输出散文件: {e}")
                     self._copy_pack_fallback(successes)
                     self._emit("onPackFinished", False, "", 0)
+            elif (not pack_output) and successes:
+                by_dir: Dict[str, List[Dict[str, Any]]] = {}
+                for item in successes:
+                    parent = os.path.dirname(os.path.abspath(str(item.get("path") or "")))
+                    by_dir.setdefault(parent, []).append(item)
+                last_dir = ""
+                for folder, rows in by_dir.items():
+                    self._write_folder_manifest(folder, rows)
+                    self._log(f"📁 已输出 {len(rows)} 个贴纸 -> {folder}")
+                    last_dir = folder
+                if last_dir:
+                    self._emit("onPackFinished", True, last_dir, len(successes))
+            elif loose_folders:
+                self._remove_empty_dirs(loose_folders)
         finally:
             if staging:
                 shutil.rmtree(staging, ignore_errors=True)

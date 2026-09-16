@@ -1121,12 +1121,6 @@ async function aiTagSingle(task: TaskItem) {
 // --- Conversion Controls ---
 async function startConversion() {
   if (tasks.value.length === 0 || isBusy.value) return
-  if (!globalOptions.value.pack_output) {
-    const ok = window.confirm(
-      '未勾选「输出为压缩包」。贴纸 keywords 只会写入压缩包内的 stickers.json，散文件导出不会包含该映射。是否继续转换？'
-    )
-    if (!ok) return
-  }
   updateAllTasksOutputPaths()
   isConverting.value = true
 
@@ -1829,7 +1823,7 @@ async function triggerAiTagAll() {
                 {{ isExporting ? '导出中...' : '📤 导出' }}
               </button>
             </div>
-            <label class="shrink-0 flex items-center gap-1.5 cursor-pointer select-none" title="压缩包内额外写入 stickers.json，对应每个贴纸的 emoji 与 keywords">
+            <label class="shrink-0 flex items-center gap-1.5 cursor-pointer select-none" title="压缩包或输出文件夹内写入 stickers.json，对应每个贴纸的 emoji 与 keywords">
               <input
                 v-model="globalOptions.pack_output"
                 type="checkbox"
@@ -1841,7 +1835,7 @@ async function triggerAiTagAll() {
             </label>
           </div>
           <p class="text-[10px] text-gray-500 leading-snug">
-            keywords 仅随压缩包写入 <span class="font-mono text-gray-400">stickers.json</span>
+            keywords 写入压缩包或输出文件夹内的 <span class="font-mono text-gray-400">stickers.json</span>
           </p>
 
           <button
@@ -1926,7 +1920,7 @@ async function triggerAiTagAll() {
       >
         <div class="text-xs font-semibold text-white">贴纸列表文件</div>
         <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">
-          {{ globalOptions.pack_output ? '按转换结果打包已裁切源文件，不压成贴纸码率' : '按转换结果输出已裁切的源文件，不压成贴纸码率' }}
+          {{ globalOptions.pack_output ? '按转换结果打包已裁切源文件，不压成贴纸码率' : '按转换结果输出已裁切源文件到文件夹，不压成贴纸码率' }}
         </div>
       </button>
     </div>

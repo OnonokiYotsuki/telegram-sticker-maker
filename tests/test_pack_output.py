@@ -9,10 +9,12 @@ from core.pack_output import (
     PackEntry,
     PackError,
     STICKERS_JSON_NAME,
+    default_pack_dir_name,
     default_zip_name,
     normalize_keywords,
     pack_stickers,
     unique_arcname,
+    unique_output_dir,
 )
 from server.api import AppAPI
 
@@ -27,6 +29,16 @@ def _touch(path: str, data: bytes = b"sticker") -> str:
 def test_default_zip_name():
     name = default_zip_name(datetime(2026, 9, 14, 15, 30, 45))
     assert name == "TG_Stickers_20260914_153045.zip"
+    assert default_pack_dir_name(datetime(2026, 9, 14, 15, 30, 45)) == "TG_Stickers_20260914_153045"
+
+
+def test_unique_output_dir_avoids_collision(tmp_path):
+    first = unique_output_dir(str(tmp_path), "TG_Stickers_demo")
+    second = unique_output_dir(str(tmp_path), "TG_Stickers_demo")
+    assert os.path.basename(first) == "TG_Stickers_demo"
+    assert os.path.basename(second) == "TG_Stickers_demo_2"
+    assert os.path.isdir(first)
+    assert os.path.isdir(second)
 
 
 def test_unique_arcname_collision():
@@ -159,6 +171,8 @@ def test_conversion_skips_pack_when_disabled(monkeypatch, tmp_path):
             "task_id": 1,
             "input_path": str(tmp_path / "in.mp4"),
             "output_path": str(out_dir / "001.webm"),
+            "emoji": "😂",
+            "keywords": "happy",
         }
     ]
     api._run_conversion_worker(
@@ -166,8 +180,14 @@ def test_conversion_skips_pack_when_disabled(monkeypatch, tmp_path):
         {"pack_output": False, "custom_output_dir": str(out_dir)},
     )
     assert list(out_dir.glob("*.zip")) == []
-    assert os.path.isfile(tasks[0]["output_path"])
-    assert list(out_dir.glob("*.json")) == []
+    assert list(out_dir.glob("*.webm")) == []
+    folders = [p for p in out_dir.iterdir() if p.is_dir() and p.name.startswith("TG_Stickers_")]
+    assert len(folders) == 1
+    assert os.path.isfile(folders[0] / "001.webm")
+    manifest = json.loads((folders[0] / STICKERS_JSON_NAME).read_text(encoding="utf-8"))
+    assert manifest["stickers"][0]["file"] == "001.webm"
+    assert manifest["stickers"][0]["emoji"] == "😂"
+    assert manifest["stickers"][0]["keywords"] == ["happy"]
 
 
 def test_normalize_keywords():

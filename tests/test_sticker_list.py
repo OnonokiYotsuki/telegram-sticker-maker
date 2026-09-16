@@ -361,6 +361,46 @@ def test_api_export_sticker_list_to_path(tmp_path):
     assert (dest / "001_🐱.png").is_file()
 
 
+def test_api_export_list_wraps_folder_when_not_zip(tmp_path):
+    src = tmp_path / "b.png"
+    src.write_bytes(b"img")
+    out_dir = tmp_path / "out"
+    api = AppAPI()
+    res = api.export_sticker_list(
+        [{"input_path": str(src), "emoji": "🐱", "is_video": False, "index": 1}],
+        dest_path="",
+        directory=str(out_dir),
+        mode="list",
+        global_options={"pack_output": False, "custom_output_dir": str(out_dir)},
+    )
+    assert res["status"] == "ok"
+    assert os.path.isdir(res["path"])
+    assert os.path.basename(res["path"]).startswith("TG_Stickers_")
+    assert not (out_dir / "001_🐱.png").exists()
+    assert (out_dir / os.path.basename(res["path"]) / "001_🐱.png").is_file()
+    assert (out_dir / os.path.basename(res["path"]) / STICKERS_JSON_NAME).is_file()
+
+
+def test_api_export_list_same_dir_wraps_folder(tmp_path):
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    src = src_dir / "b.png"
+    src.write_bytes(b"img")
+    api = AppAPI()
+    res = api.export_sticker_list(
+        [{"input_path": str(src), "emoji": "🐱", "is_video": False, "index": 1}],
+        dest_path="",
+        directory=str(tmp_path / "unused"),
+        mode="list",
+        global_options={"pack_output": False, "same_dir": True},
+    )
+    assert res["status"] == "ok"
+    assert os.path.dirname(res["path"]) == str(src_dir)
+    assert os.path.basename(res["path"]).startswith("TG_Stickers_")
+    assert not (src_dir / "001_🐱.png").exists()
+    assert (src_dir / os.path.basename(res["path"]) / "001_🐱.png").is_file()
+
+
 def test_write_sticker_bundle_zip_keeps_sources_layout(tmp_path):
     src = tmp_path / "clip.mp4"
     src.write_bytes(b"src")
