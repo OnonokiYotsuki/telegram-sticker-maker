@@ -94,7 +94,7 @@
           <div class="bg-[#171922] border border-[#262a35] rounded-lg p-3 space-y-2">
             
             <!-- Timeline Scrubber -->
-            <div v-if="isVideo" class="space-y-1">
+            <div v-if="isVideo" class="space-y-1" @wheel.prevent="onTimelineWheel">
               <div class="flex items-center justify-between gap-3 text-xs font-mono tabular-nums">
                 <span class="font-semibold text-sky-400 min-w-[5.5rem]">{{ formatTime(currentTime) }}</span>
                 <span v-if="hoverTime != null" class="text-[11px] text-sky-200">
@@ -108,7 +108,18 @@
                   片段 {{ formatTime(selectedClip.startTime) }} – {{ formatTime(selectedClip.endTime) }}
                   <span class="text-slate-500">({{ (selectedClip.endTime - selectedClip.startTime).toFixed(2) }}s)</span>
                 </span>
-                <span class="text-slate-500 min-w-[5.5rem] text-right">{{ formatTime(mediaInfo.duration) }}</span>
+                <span class="text-slate-500 min-w-[5.5rem] text-right flex items-center justify-end gap-1.5">
+                  <button
+                    v-if="isTimelineZoomed"
+                    type="button"
+                    class="px-1.5 py-0.5 rounded text-[10px] font-sans text-sky-300 bg-sky-500/10 border border-sky-500/30 hover:bg-sky-500/20"
+                    title="双击时间轴也可复位"
+                    @click="resetTimelineZoom"
+                  >
+                    复位 {{ viewSpan.toFixed(viewSpan < 2 ? 2 : 1) }}s
+                  </button>
+                  <span>{{ formatTime(mediaInfo.duration) }}</span>
+                </span>
               </div>
 
               <div
@@ -126,6 +137,7 @@
                 @pointerup="onTimelinePointerUp"
                 @pointercancel="onTimelinePointerUp"
                 @pointerleave="onTimelinePointerLeave"
+                @dblclick="resetTimelineZoom"
               >
                 <div
                   v-for="tick in timelineTicks"
@@ -135,7 +147,7 @@
                 />
 
                 <div class="timeline-track">
-                  <div class="timeline-played" :style="{ width: progressPct + '%' }" />
+                  <div class="timeline-played" :style="playedStyle" />
                 </div>
 
                 <div
@@ -609,37 +621,98 @@ const inSelectedClip = computed(() => {
   return currentTime.value >= clip.startTime - 0.001 && currentTime.value <= clip.endTime + 0.001
 })
 const timelineDuration = computed(() => Math.max(0.0001, props.mediaInfo.duration || 0))
-const progressPct = computed(() =>
-  Math.max(0, Math.min(100, (currentTime.value / timelineDuration.value) * 100))
+const timelineViewStart = ref(0)
+const timelineViewEnd = ref(Math.max(0.0001, props.mediaInfo.duration || 0))
+const MIN_VIEW_SEC = 0.2
+const viewSpan = computed(() =>
+  Math.max(0.0001, timelineViewEnd.value - timelineViewStart.value)
 )
-const hoverPct = computed(() => {
-  if (hoverTime.value == null) return 0
-  return Math.max(0, Math.min(100, (hoverTime.value / timelineDuration.value) * 100))
+const isTimelineZoomed = computed(
+  () => viewSpan.value < timelineDuration.value - 0.02
+)
+const progressPct = computed(() => timeToPct(currentTime.value))
+const hoverPct = computed(() => (hoverTime.value == null ? 0 : timeToPct(hoverTime.value)))
+const playedStyle = computed(() => {
+  const pct = Math.max(0, Math.min(100, progressPct.value))
+  return { width: `${pct}%` }
 })
 const timelineTicks = computed(() => {
-  const dur = props.mediaInfo.duration || 0
-  if (dur <= 0) return [] as number[]
-  const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600]
+  const start = timelineViewStart.value
+  const end = timelineViewEnd.value
+  const span = end - start
+  if (span <= 0) return [] as number[]
+  const steps = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600]
   let step = steps[steps.length - 1]
   for (const s of steps) {
-    if (dur / s <= 10) {
+    if (span / s <= 12) {
       step = s
       break
     }
   }
+  const first = Math.ceil((start + step * 0.04) / step) * step
   const ticks: number[] = []
-  for (let t = step; t < dur - step * 0.12; t += step) ticks.push(t)
+  for (let t = first; t < end - step * 0.04; t += step) ticks.push(t)
   return ticks
 })
 
 function timeToPct(t: number) {
-  return Math.max(0, Math.min(100, (t / timelineDuration.value) * 100))
+  return ((t - timelineViewStart.value) / viewSpan.value) * 100
 }
 
 function clipRangeStyle(clip: ClipItem) {
-  const left = timeToPct(clip.startTime)
-  const width = Math.max(0.4, timeToPct(clip.endTime) - left)
-  return { left: `${left}%`, width: `${width}%` }
+  const leftT = Math.max(clip.startTime, timelineViewStart.value)
+  const rightT = Math.min(clip.endTime, timelineViewEnd.value)
+  if (rightT <= leftT) return { display: 'none' }
+  const left = timeToPct(leftT)
+  const width = timeToPct(rightT) - left
+  return { left: `${left}%`, width: `${Math.max(0.2, width)}%` }
+}
+
+function clampTimelineView(start: number, end: number) {
+  const dur = timelineDuration.value
+  let span = Math.max(Math.min(MIN_VIEW_SEC, dur), Math.min(dur, end - start))
+  let s = start
+  let e = s + span
+  if (s < 0) {
+    s = 0
+    e = span
+  }
+  if (e > dur) {
+    e = dur
+    s = Math.max(0, e - span)
+  }
+  timelineViewStart.value = s
+  timelineViewEnd.value = e
+}
+
+function resetTimelineZoom() {
+  timelineViewStart.value = 0
+  timelineViewEnd.value = timelineDuration.value
+}
+
+function panTimelineView(dt: number) {
+  clampTimelineView(timelineViewStart.value + dt, timelineViewEnd.value + dt)
+}
+
+function onTimelineWheel(e: WheelEvent) {
+  const dur = timelineDuration.value
+  if (dur <= 0) return
+
+  const isPan = e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)
+  if (isPan) {
+    const el = timelineRef.value
+    const width = el?.getBoundingClientRect().width || 1
+    const deltaPx = e.shiftKey ? e.deltaY : e.deltaX
+    panTimelineView((deltaPx / width) * viewSpan.value)
+    return
+  }
+
+  const pivot = timeFromClientX(e.clientX)
+  const oldStart = timelineViewStart.value
+  const oldSpan = viewSpan.value
+  const ratio = oldSpan <= 0 ? 0.5 : (pivot - oldStart) / oldSpan
+  const factor = Math.exp(e.deltaY * 0.003)
+  clampTimelineView(pivot - ratio * oldSpan * factor, pivot + (1 - ratio) * oldSpan * factor)
 }
 
 // MP4/WebM/Ogg are Range-seekable. MKV and others are an FFmpeg pipe; setting
@@ -777,11 +850,11 @@ const seekRelative = (delta: number) => {
 
 function timeFromClientX(clientX: number) {
   const el = timelineRef.value
-  if (!el) return 0
+  if (!el) return timelineViewStart.value
   const rect = el.getBoundingClientRect()
-  if (rect.width <= 0) return 0
+  if (rect.width <= 0) return timelineViewStart.value
   const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
-  return ratio * (props.mediaInfo.duration || 0)
+  return timelineViewStart.value + ratio * viewSpan.value
 }
 
 const onTimelinePointerDown = (e: PointerEvent) => {
@@ -1271,6 +1344,7 @@ onUnmounted(() => {
   cursor: pointer;
   touch-action: none;
   outline: none;
+  overflow: hidden;
 }
 .timeline:focus-visible {
   box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.35);
