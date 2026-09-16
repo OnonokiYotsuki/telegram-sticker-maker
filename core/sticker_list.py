@@ -190,12 +190,12 @@ def prepared_output_ext(
     radius: float,
 ) -> str:
     orig = os.path.splitext(src)[1] or ".bin"
+    if is_video:
+        return orig
     if not crop:
         return orig
     if normalize_crop_radius(radius) > 0.001:
-        return ".webm" if is_video else ".png"
-    if is_video:
-        return orig if orig.lower() in {".mp4", ".mov", ".m4v"} else ".mp4"
+        return ".png"
     if orig.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
         return orig
     return ".png"
@@ -337,7 +337,8 @@ def _extract_video_with_crop(
     if clip_dur is not None:
         cmd += ["-t", f"{clip_dur:.3f}"]
     cmd += ["-vf", vf, "-an", "-sn", "-dn", "-map_metadata", "-1"]
-    if mask:
+    ext = os.path.splitext(dest)[1].lower()
+    if mask and ext in {".webm", ".mkv"}:
         cmd += [
             "-c:v",
             "libvpx-vp9",
@@ -352,6 +353,8 @@ def _extract_video_with_crop(
         ]
     else:
         cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p"]
+        if ext in {".mp4", ".m4v", ".mov"}:
+            cmd += ["-movflags", "+faststart"]
     cmd.append(dest)
     if os.path.isfile(dest):
         os.remove(dest)

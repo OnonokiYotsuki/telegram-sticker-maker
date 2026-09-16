@@ -16,6 +16,7 @@ from core.sticker_list import (
     default_bundle_name,
     default_list_name,
     export_prepared_stickers,
+    prepared_output_ext,
     write_sticker_bundle,
     write_sticker_list,
 )
@@ -98,6 +99,13 @@ def test_write_sticker_bundle_copies_unique_sources(tmp_path):
     assert data["stickers"][0]["input_path"] == f"{BUNDLE_SOURCES_DIR}/a.mp4"
     assert data["stickers"][1]["input_path"] == f"{BUNDLE_SOURCES_DIR}/a.mp4"
     assert data["stickers"][2]["input_path"] == f"{BUNDLE_SOURCES_DIR}/b.png"
+
+
+def test_prepared_output_ext_keeps_source_video_container():
+    assert prepared_output_ext(r"D:\a\clip.mkv", is_video=True, crop=None, radius=0) == ".mkv"
+    assert prepared_output_ext(r"D:\a\clip.mkv", is_video=True, crop=[0, 0, 100, 100], radius=0) == ".mkv"
+    assert prepared_output_ext(r"D:\a\clip.mkv", is_video=True, crop=[0, 0, 100, 100], radius=1) == ".mkv"
+    assert prepared_output_ext(r"D:\a\clip.mp4", is_video=True, crop=[0, 0, 100, 100], radius=0) == ".mp4"
 
 
 def test_export_prepared_copies_image_with_convert_name(tmp_path):
