@@ -85,7 +85,10 @@ def unique_arcname(name: str, used: set[str]) -> str:
         i += 1
 
 
-def resolve_entries(entries: Iterable[PackEntry]) -> list[PackEntry]:
+def resolve_entries(
+    entries: Iterable[PackEntry],
+    allow_any_file: bool = False,
+) -> list[PackEntry]:
     used: set[str] = {STICKERS_JSON_NAME}
     resolved: list[PackEntry] = []
     for entry in entries:
@@ -93,7 +96,7 @@ def resolve_entries(entries: Iterable[PackEntry]) -> list[PackEntry]:
         if not os.path.isfile(path):
             continue
         ext = os.path.splitext(path)[1].lower()
-        if ext not in STICKER_EXTS:
+        if not allow_any_file and ext not in STICKER_EXTS:
             continue
         arc = unique_arcname(entry.arcname or os.path.basename(path), used)
         resolved.append(
@@ -120,9 +123,13 @@ def build_stickers_manifest(entries: Iterable[PackEntry]) -> dict:
     return {"stickers": stickers}
 
 
-def pack_stickers(entries: Iterable[PackEntry], zip_path: str) -> dict:
+def pack_stickers(
+    entries: Iterable[PackEntry],
+    zip_path: str,
+    allow_any_file: bool = False,
+) -> dict:
     """Write sticker files into a zip. Returns pack stats."""
-    resolved = resolve_entries(entries)
+    resolved = resolve_entries(entries, allow_any_file=allow_any_file)
     if not resolved:
         raise PackError("没有可打包的贴纸文件")
 

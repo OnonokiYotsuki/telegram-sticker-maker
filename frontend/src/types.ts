@@ -104,10 +104,12 @@ export interface AppAPI {
     dest_path?: string,
     directory?: string,
     mode?: 'list' | 'sources',
+    global_options?: Record<string, unknown>,
   ) => Promise<{
     status: string
     path?: string
     json_path?: string
+    zip_path?: string
     count?: number
     copied?: number
     missing?: string[]

@@ -27,9 +27,8 @@ from core.pack_output import (
 from core.sticker_list import (
     StickerListError,
     default_bundle_name,
-    default_list_name,
+    export_prepared_stickers,
     write_sticker_bundle,
-    write_sticker_list,
 )
 from core.settings_store import default_output_dir, default_settings
 from core.settings_store import load_settings as load_app_settings
@@ -257,8 +256,10 @@ class AppAPI:
         dest_path: str = "",
         directory: str = "",
         mode: str = "list",
+        global_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         export_mode = "sources" if mode == "sources" else "list"
+        opts = global_options or {}
         try:
             dest = (dest_path or "").strip()
             if export_mode == "sources":
@@ -272,10 +273,11 @@ class AppAPI:
                 if missing:
                     self._log(f"⚠️ 有 {len(missing)} 个源文件缺失，已跳过")
                 return {"status": "ok", **result}
-            if not dest:
-                dest = self._resolve_list_path(directory=directory)
-            result = write_sticker_list(dest, stickers, export_mode="list")
-            self._log(f"📤 已导出贴纸列表 {result['count']} 项 -> {result['path']}")
+            result = self._export_prepared(stickers, dest, directory=directory, opts=opts)
+            missing = result.get("missing") or []
+            self._log(f"📤 已导出转换前文件 {result['count']} 项 -> {result['path']}")
+            if missing:
+                self._log(f"⚠️ 有 {len(missing)} 个源文件缺失，已跳过")
             return {"status": "ok", **result}
         except StickerListError as e:
             self._log(f"⚠️ 导出列表跳过: {e}")
@@ -283,6 +285,56 @@ class AppAPI:
         except Exception as e:
             self._log(f"❌ 导出列表失败: {e}")
             return {"status": "error", "error": str(e)}
+
+    def _export_prepared(
+        self,
+        stickers: List[Dict[str, Any]],
+        dest_path: str,
+        directory: str,
+        opts: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        pack_output = bool(opts.get("pack_output", True))
+        dest = (dest_path or "").strip()
+        if dest.lower().endswith(".zip"):
+            staging = tempfile.mkdtemp(prefix="tg_stickers_export_")
+            try:
+                return export_prepared_stickers(stickers, staging, zip_path=dest)
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+        if dest:
+            return export_prepared_stickers(stickers, dest)
+
+        out_dir = (directory or "").strip() or self._pack_zip_dir(opts)
+        if pack_output:
+            staging = tempfile.mkdtemp(prefix="tg_stickers_export_")
+            try:
+                zip_path = self._resolve_zip_path(zip_dir=out_dir)
+                return export_prepared_stickers(stickers, staging, zip_path=zip_path)
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+        if opts.get("same_dir"):
+            return self._export_prepared_same_dir(stickers)
+        os.makedirs(out_dir, exist_ok=True)
+        return export_prepared_stickers(stickers, out_dir)
+
+    def _export_prepared_same_dir(self, stickers: List[Dict[str, Any]]) -> Dict[str, Any]:
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for item in stickers:
+            src = str(item.get("input_path") or "").strip()
+            if not src:
+                continue
+            grouped.setdefault(os.path.dirname(os.path.abspath(src)), []).append(item)
+        if not grouped:
+            raise StickerListError("贴纸列表为空")
+        total = 0
+        missing: List[str] = []
+        last_path = ""
+        for folder, rows in grouped.items():
+            result = export_prepared_stickers(rows, folder)
+            total += int(result["count"])
+            missing.extend(result.get("missing") or [])
+            last_path = str(result["path"])
+        return {"path": last_path, "count": total, "missing": missing}
 
     def _resolve_bundle_dir(self, directory: str = "") -> str:
         bundle_name = default_bundle_name()
@@ -308,32 +360,6 @@ class AppAPI:
         dest = os.path.join(os.path.abspath(dest_dir), bundle_name)
         os.makedirs(dest, exist_ok=True)
         return dest
-
-    def _resolve_list_path(self, directory: str = "") -> str:
-        if webview.windows:
-            suggested_dir = (directory or "").strip() or default_output_dir()
-            result = None
-            try:
-                os.makedirs(suggested_dir, exist_ok=True)
-                result = webview.windows[0].create_file_dialog(
-                    _file_dialog_type("SAVE"),
-                    directory=suggested_dir,
-                    save_filename=default_list_name(),
-                    file_types=("贴纸列表 (*.json)",),
-                )
-            except Exception:
-                result = None
-            if result:
-                chosen = result[0] if isinstance(result, (list, tuple)) else str(result)
-                if chosen:
-                    dest = os.path.abspath(chosen)
-                    if not dest.lower().endswith(".json"):
-                        dest += ".json"
-                    return dest
-            raise StickerListError("已取消导出")
-        dest_dir = (directory or "").strip() or default_output_dir()
-        os.makedirs(dest_dir, exist_ok=True)
-        return os.path.join(os.path.abspath(dest_dir), default_list_name())
 
     def pack_outputs(
         self,

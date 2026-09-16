@@ -1,6 +1,10 @@
 import json
+import os
+import subprocess
+import zipfile
 from datetime import datetime
 
+from core.pack_output import STICKERS_JSON_NAME
 from core.sticker_list import (
     BUNDLE_JSON_NAME,
     BUNDLE_SOURCES_DIR,
@@ -8,6 +12,7 @@ from core.sticker_list import (
     build_sticker_list_document,
     default_bundle_name,
     default_list_name,
+    export_prepared_stickers,
     write_sticker_bundle,
     write_sticker_list,
 )
@@ -92,16 +97,93 @@ def test_write_sticker_bundle_copies_unique_sources(tmp_path):
     assert data["stickers"][2]["input_path"] == f"{BUNDLE_SOURCES_DIR}/b.png"
 
 
+def test_export_prepared_copies_image_with_convert_name(tmp_path):
+    src = tmp_path / "photo.png"
+    src.write_bytes(b"png-bytes")
+    dest = tmp_path / "out"
+    result = export_prepared_stickers(
+        [{"input_path": str(src), "emoji": "🐱", "is_video": False, "index": 1, "keywords": "cat"}],
+        str(dest),
+    )
+    assert result["count"] == 1
+    out = dest / "001_🐱.png"
+    assert out.read_bytes() == b"png-bytes"
+
+
+def test_export_prepared_zip_includes_manifest(tmp_path):
+    src = tmp_path / "photo.png"
+    src.write_bytes(b"png-bytes")
+    dest = tmp_path / "stage"
+    zpath = tmp_path / "pack.zip"
+    export_prepared_stickers(
+        [{"input_path": str(src), "emoji": "🐱", "is_video": False, "index": 2}],
+        str(dest),
+        zip_path=str(zpath),
+    )
+    with zipfile.ZipFile(zpath) as zf:
+        names = zf.namelist()
+        assert "002_🐱.png" in names
+        assert STICKERS_JSON_NAME in names
+        manifest = json.loads(zf.read(STICKERS_JSON_NAME))
+        assert manifest["stickers"][0]["emoji"] == "🐱"
+
+
+def test_export_prepared_stream_copy_clip(tmp_path):
+    src = str(tmp_path / "sample_10s.mp4")
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=10:size=320x240:rate=24",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            src,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    dest = tmp_path / "clips"
+    result = export_prepared_stickers(
+        [
+            {
+                "input_path": src,
+                "emoji": "🎬",
+                "is_video": True,
+                "index": 1,
+                "start_time": 3.0,
+                "end_time": 5.5,
+                "duration": 10,
+            }
+        ],
+        str(dest),
+    )
+    assert result["count"] == 1
+    out = dest / "001_🎬.mp4"
+    assert out.is_file()
+    assert out.stat().st_size > 512
+    assert out.stat().st_size < os.path.getsize(src)
+
+
 def test_api_export_sticker_list_to_path(tmp_path):
+    src = tmp_path / "b.png"
+    src.write_bytes(b"img")
+    dest = tmp_path / "out"
     api = AppAPI()
-    dest = tmp_path / "out.json"
     res = api.export_sticker_list(
-        [{"input_path": str(tmp_path / "b.webm"), "emoji": "🐱"}],
+        [{"input_path": str(src), "emoji": "🐱", "is_video": False, "index": 1}],
         dest_path=str(dest),
+        mode="list",
+        global_options={"pack_output": False},
     )
     assert res["status"] == "ok"
     assert res["count"] == 1
-    assert dest.is_file()
+    assert (dest / "001_🐱.png").is_file()
 
 
 def test_api_export_sources_bundle(tmp_path):

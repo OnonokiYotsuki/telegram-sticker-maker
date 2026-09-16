@@ -7,7 +7,8 @@ import shutil
 from datetime import datetime
 from typing import Any, Iterable, Mapping, Optional
 
-from core.pack_output import unique_arcname
+from core.pack_output import PackEntry, pack_stickers, unique_arcname
+from core.proc import ffmpeg_bin, run_hidden
 
 
 LIST_KIND = "sticker_maker_list"
@@ -153,3 +154,138 @@ def write_sticker_bundle(dest_dir: str, stickers: Iterable[Mapping[str, Any]]) -
         "copied": len(path_map),
         "missing": missing,
     }
+
+
+def format_prepared_name(index: int, emoji: str, ext: str) -> str:
+    if not ext.startswith("."):
+        ext = "." + ext
+    idx = f"{int(index):03d}"
+    clean = (emoji or "").strip()
+    return f"{idx}_{clean}{ext}" if clean else f"{idx}{ext}"
+
+
+def should_copy_whole_file(
+    is_video: bool,
+    start_time: Optional[float],
+    end_time: Optional[float],
+    duration: Optional[float],
+) -> bool:
+    if not is_video:
+        return True
+    start = float(start_time or 0)
+    if start > 0.05:
+        return False
+    if end_time is None:
+        return True
+    end = float(end_time)
+    if end <= start:
+        return True
+    if duration is not None and end >= float(duration) - 0.05:
+        return True
+    return False
+
+
+def extract_source_clip(
+    input_path: str,
+    output_path: str,
+    *,
+    is_video: bool = True,
+    start_time: Optional[float] = None,
+    end_time: Optional[float] = None,
+    duration: Optional[float] = None,
+) -> None:
+    """Copy or stream-copy a clip. Does not transcode."""
+    src = os.path.abspath(input_path)
+    dest = os.path.abspath(output_path)
+    if not os.path.isfile(src):
+        raise StickerListError(f"源文件不存在: {src}")
+    os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    if src == dest:
+        return
+    if should_copy_whole_file(is_video, start_time, end_time, duration):
+        shutil.copy2(src, dest)
+        return
+
+    start = float(start_time or 0)
+    end = float(end_time) if end_time is not None else None
+    clip_dur = (end - start) if end is not None and end > start else None
+    ffmpeg = ffmpeg_bin()
+
+    def run_copy(with_map: bool) -> bool:
+        if os.path.isfile(dest):
+            os.remove(dest)
+        cmd = [ffmpeg, "-y"]
+        if start > 0.02:
+            cmd += ["-ss", f"{start:.3f}"]
+        cmd += ["-i", src]
+        if clip_dur is not None:
+            cmd += ["-t", f"{clip_dur:.3f}"]
+        cmd += ["-c", "copy", "-avoid_negative_ts", "make_zero", "-fflags", "+genpts"]
+        if with_map:
+            cmd += ["-map", "0"]
+        cmd += [dest]
+        res = run_hidden(cmd)
+        return res.returncode == 0 and os.path.isfile(dest) and os.path.getsize(dest) > 512
+
+    if run_copy(False) or run_copy(True):
+        return
+    shutil.copy2(src, dest)
+
+
+def export_prepared_stickers(
+    stickers: Iterable[Mapping[str, Any]],
+    dest_dir: str,
+    *,
+    zip_path: str = "",
+) -> dict[str, Any]:
+    """Export conversion-named files without transcoding. Optionally zip like convert."""
+    root = os.path.abspath(dest_dir)
+    os.makedirs(root, exist_ok=True)
+    used: set[str] = set()
+    entries: list[PackEntry] = []
+    missing: list[str] = []
+
+    for i, raw in enumerate(stickers, 1):
+        src = str(raw.get("input_path") or "").strip()
+        if not src:
+            continue
+        if not os.path.isfile(src):
+            missing.append(src)
+            continue
+        index = int(raw.get("index") or i)
+        emoji = str(raw.get("emoji") or "")
+        ext = os.path.splitext(src)[1] or ".bin"
+        name = unique_arcname(format_prepared_name(index, emoji, ext), used)
+        out_path = os.path.join(root, name)
+        extract_source_clip(
+            src,
+            out_path,
+            is_video=bool(raw.get("is_video", True)),
+            start_time=_as_optional_float(raw.get("start_time")),
+            end_time=_as_optional_float(raw.get("end_time")),
+            duration=_as_optional_float(raw.get("duration")),
+        )
+        entries.append(
+            PackEntry(
+                path=out_path,
+                emoji=emoji,
+                keywords=raw.get("keywords"),
+                arcname=name,
+            )
+        )
+
+    if not entries:
+        raise StickerListError("没有可导出的源文件")
+
+    result: dict[str, Any] = {
+        "path": root,
+        "count": len(entries),
+        "missing": missing,
+        "files": [item.arcname for item in entries],
+    }
+    if zip_path:
+        packed = pack_stickers(entries, zip_path, allow_any_file=True)
+        result["path"] = packed["path"]
+        result["zip_path"] = packed["path"]
+        result["bytes"] = packed["bytes"]
+    return result

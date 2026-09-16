@@ -936,6 +936,8 @@ async function exportStickerList(mode: 'list' | 'sources') {
     clip_group_id: t.clipGroupId,
     clip_id: t.clipId,
     clip_label: t.clipLabel,
+    index: t.index,
+    duration: t.mediaInfo.duration,
   }))
   try {
     if (!window.pywebview?.api?.export_sticker_list) {
@@ -947,6 +949,11 @@ async function exportStickerList(mode: 'list' | 'sources') {
       '',
       globalOptions.value.custom_output_dir || '',
       mode,
+      {
+        pack_output: globalOptions.value.pack_output,
+        same_dir: globalOptions.value.same_dir,
+        custom_output_dir: globalOptions.value.custom_output_dir,
+      },
     )
     if (res.status === 'ok' && res.path) {
       if (mode === 'sources') {
@@ -956,7 +963,10 @@ async function exportStickerList(mode: 'list' | 'sources') {
           appendLog(`⚠️ 有 ${res.missing.length} 个源文件缺失，已跳过`)
         }
       } else {
-        appendLog(`📤 已导出贴纸列表 ${res.count} 项 -> ${res.path}`)
+        appendLog(`📤 已导出转换前文件 ${res.count} 项 -> ${res.path}`)
+        if (res.missing && res.missing.length > 0) {
+          appendLog(`⚠️ 有 ${res.missing.length} 个源文件缺失，已跳过`)
+        }
       }
     } else if (res.status === 'empty' && res.error === '已取消导出') {
       appendLog('已取消导出')
@@ -1491,7 +1501,7 @@ async function triggerAiTagAll() {
                   @click="exportStickerList('list')"
                 >
                   <div class="text-xs font-semibold text-white">贴纸列表文件</div>
-                  <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">转换前的参数 JSON，不含源文件</div>
+                  <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">按转换结果输出切好的源文件，不转码</div>
                 </button>
               </div>
             </div>
