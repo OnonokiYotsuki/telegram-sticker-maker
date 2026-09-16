@@ -94,22 +94,67 @@
           <div class="bg-[#171922] border border-[#262a35] rounded-lg p-3 space-y-2">
             
             <!-- Timeline Scrubber -->
-            <div v-if="isVideo" class="flex items-center space-x-3">
-              <span class="text-xs font-mono font-semibold text-sky-400 w-16 text-right">
-                {{ formatTime(currentTime) }}
-              </span>
-              <input
-                type="range"
-                min="0"
-                :max="mediaInfo.duration"
-                step="0.01"
-                :value="currentTime"
-                @input="onSliderInput"
-                class="flex-1 h-1.5 bg-[#252833] rounded-lg appearance-none cursor-pointer accent-sky-500"
-              />
-              <span class="text-xs font-mono text-slate-400 w-16">
-                {{ formatTime(mediaInfo.duration) }}
-              </span>
+            <div v-if="isVideo" class="space-y-1">
+              <div class="flex items-center justify-between gap-3 text-xs font-mono tabular-nums">
+                <span class="font-semibold text-sky-400 min-w-[5.5rem]">{{ formatTime(currentTime) }}</span>
+                <span v-if="hoverTime != null" class="text-[11px] text-sky-200">
+                  {{ formatTime(hoverTime) }}
+                </span>
+                <span
+                  v-else-if="selectedClip"
+                  class="text-[11px] truncate"
+                  :class="inSelectedClip ? 'text-sky-300' : 'text-slate-500'"
+                >
+                  片段 {{ formatTime(selectedClip.startTime) }} – {{ formatTime(selectedClip.endTime) }}
+                  <span class="text-slate-500">({{ (selectedClip.endTime - selectedClip.startTime).toFixed(2) }}s)</span>
+                </span>
+                <span class="text-slate-500 min-w-[5.5rem] text-right">{{ formatTime(mediaInfo.duration) }}</span>
+              </div>
+
+              <div
+                ref="timelineRef"
+                class="timeline"
+                :class="{ 'is-scrubbing': isScrubbing }"
+                role="slider"
+                tabindex="0"
+                aria-label="播放进度"
+                :aria-valuemin="0"
+                :aria-valuemax="mediaInfo.duration"
+                :aria-valuenow="currentTime"
+                @pointerdown="onTimelinePointerDown"
+                @pointermove="onTimelinePointerMove"
+                @pointerup="onTimelinePointerUp"
+                @pointercancel="onTimelinePointerUp"
+                @pointerleave="onTimelinePointerLeave"
+              >
+                <div
+                  v-for="tick in timelineTicks"
+                  :key="tick"
+                  class="timeline-tick"
+                  :style="{ left: timeToPct(tick) + '%' }"
+                />
+
+                <div class="timeline-track">
+                  <div class="timeline-played" :style="{ width: progressPct + '%' }" />
+                </div>
+
+                <div
+                  v-for="(clip, idx) in clips"
+                  :key="clip.id"
+                  class="timeline-clip"
+                  :class="{ 'is-active': idx === selectedClipIdx }"
+                  :style="clipRangeStyle(clip)"
+                  :title="`片段 ${idx + 1}: ${formatTime(clip.startTime)} – ${formatTime(clip.endTime)}`"
+                />
+
+                <div
+                  v-if="hoverTime != null"
+                  class="timeline-hover-line"
+                  :style="{ left: hoverPct + '%' }"
+                />
+
+                <div class="timeline-head" :style="{ left: progressPct + '%' }" />
+              </div>
             </div>
 
             <div v-if="!isVideo" class="flex items-center justify-between pt-1">
@@ -511,6 +556,7 @@ const emit = defineEmits<{
 }>()
 
 const videoRef = ref<HTMLVideoElement | null>(null)
+const timelineRef = ref<HTMLDivElement | null>(null)
 const cropOverlayRef = ref<any>(null)
 
 const isPlaying = ref(false)
@@ -539,6 +585,8 @@ const cropRadius = ref(clampCropRadius(props.initialCropRadius))
 const currentCrop = ref<[number, number, number, number] | null>(props.initialCrop || null)
 
 const selectedClipIdx = ref(0)
+const hoverTime = ref<number | null>(null)
+const isScrubbing = ref(false)
 const initStart = props.initialStartTime ?? 0
 const initEnd = props.initialEndTime ?? Math.min(2.5, props.mediaInfo.duration)
 const clips = ref<ClipItem[]>([
@@ -554,6 +602,45 @@ const clips = ref<ClipItem[]>([
 ])
 
 const clipThumbnails = ref<Record<string, string>>({})
+const selectedClip = computed(() => clips.value[selectedClipIdx.value] ?? null)
+const inSelectedClip = computed(() => {
+  const clip = selectedClip.value
+  if (!clip) return false
+  return currentTime.value >= clip.startTime - 0.001 && currentTime.value <= clip.endTime + 0.001
+})
+const timelineDuration = computed(() => Math.max(0.0001, props.mediaInfo.duration || 0))
+const progressPct = computed(() =>
+  Math.max(0, Math.min(100, (currentTime.value / timelineDuration.value) * 100))
+)
+const hoverPct = computed(() => {
+  if (hoverTime.value == null) return 0
+  return Math.max(0, Math.min(100, (hoverTime.value / timelineDuration.value) * 100))
+})
+const timelineTicks = computed(() => {
+  const dur = props.mediaInfo.duration || 0
+  if (dur <= 0) return [] as number[]
+  const steps = [0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600]
+  let step = steps[steps.length - 1]
+  for (const s of steps) {
+    if (dur / s <= 10) {
+      step = s
+      break
+    }
+  }
+  const ticks: number[] = []
+  for (let t = step; t < dur - step * 0.12; t += step) ticks.push(t)
+  return ticks
+})
+
+function timeToPct(t: number) {
+  return Math.max(0, Math.min(100, (t / timelineDuration.value) * 100))
+}
+
+function clipRangeStyle(clip: ClipItem) {
+  const left = timeToPct(clip.startTime)
+  const width = Math.max(0.4, timeToPct(clip.endTime) - left)
+  return { left: `${left}%`, width: `${width}%` }
+}
 
 // MP4/WebM/Ogg are Range-seekable. MKV and others are an FFmpeg pipe; setting
 // video.currentTime only jumps the UI clock, then the live fragments pull it back.
@@ -688,13 +775,57 @@ const seekRelative = (delta: number) => {
   seekTo(base + delta)
 }
 
-const onSliderInput = (e: Event) => {
+function timeFromClientX(clientX: number) {
+  const el = timelineRef.value
+  if (!el) return 0
+  const rect = el.getBoundingClientRect()
+  if (rect.width <= 0) return 0
+  const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+  return ratio * (props.mediaInfo.duration || 0)
+}
+
+const onTimelinePointerDown = (e: PointerEvent) => {
+  if (e.button !== 0) return
+  e.preventDefault()
   stopLooping()
-  seekTo(parseFloat((e.target as HTMLInputElement).value))
+  isScrubbing.value = true
+  const t = timeFromClientX(e.clientX)
+  hoverTime.value = t
+  const hit = clips.value.findIndex((c) => t >= c.startTime && t <= c.endTime)
+  if (hit >= 0 && hit !== selectedClipIdx.value) {
+    selectedClipIdx.value = hit
+    applyClipVisuals(clips.value[hit])
+  }
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  seekTo(t)
+}
+
+const onTimelinePointerMove = (e: PointerEvent) => {
+  const t = timeFromClientX(e.clientX)
+  hoverTime.value = t
+  if (isScrubbing.value) seekTo(t)
+}
+
+const onTimelinePointerUp = (e: PointerEvent) => {
+  if (!isScrubbing.value) return
+  isScrubbing.value = false
+  const el = e.currentTarget as HTMLElement
+  if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
+  const rect = el.getBoundingClientRect()
+  const inside =
+    e.clientX >= rect.left &&
+    e.clientX <= rect.right &&
+    e.clientY >= rect.top &&
+    e.clientY <= rect.bottom
+  if (!inside) hoverTime.value = null
+}
+
+const onTimelinePointerLeave = () => {
+  if (!isScrubbing.value) hoverTime.value = null
 }
 
 const syncPlaybackClock = () => {
-  if (!videoRef.value || isReloading.value) return
+  if (!videoRef.value || isReloading.value || isScrubbing.value) return
   currentTime.value = playbackClock()
 
   if (isLooping.value) {
@@ -857,15 +988,7 @@ const setCurrentAsEnd = () => {
   curClip.duration = curClip.endTime - curClip.startTime
 }
 
-const selectClip = (idx: number) => {
-  selectedClipIdx.value = idx
-  const curClip = clips.value[idx]
-  if (!curClip) return
-
-  if (videoRef.value) {
-    seekTo(curClip.startTime)
-  }
-
+const applyClipVisuals = (curClip: ClipItem) => {
   if (curClip.crop) {
     cropActive.value = true
     currentCrop.value = [...curClip.crop]
@@ -875,6 +998,17 @@ const selectClip = (idx: number) => {
     currentCrop.value = null
     cropRadius.value = 0
   }
+}
+
+const selectClip = (idx: number) => {
+  selectedClipIdx.value = idx
+  const curClip = clips.value[idx]
+  if (!curClip) return
+
+  if (videoRef.value) {
+    seekTo(curClip.startTime)
+  }
+  applyClipVisuals(curClip)
 }
 
 const playClip = (idx: number) => {
@@ -1129,5 +1263,102 @@ onUnmounted(() => {
 .btn-subtle:hover {
   background-color: #282f3c;
   color: #ffffff;
+}
+
+.timeline {
+  position: relative;
+  height: 28px;
+  cursor: pointer;
+  touch-action: none;
+  outline: none;
+}
+.timeline:focus-visible {
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.35);
+  border-radius: 6px;
+}
+.timeline-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 6px;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: #1a1d27;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  transition: height 0.12s ease;
+}
+.timeline:hover .timeline-track,
+.timeline.is-scrubbing .timeline-track {
+  height: 8px;
+}
+.timeline-played {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0284c7, #38bdf8);
+  opacity: 0.38;
+}
+.timeline-clip {
+  position: absolute;
+  top: 50%;
+  height: 10px;
+  transform: translateY(-50%);
+  border-radius: 3px;
+  background: rgba(56, 189, 248, 0.2);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  pointer-events: none;
+}
+.timeline-clip.is-active {
+  height: 12px;
+  background: rgba(56, 189, 248, 0.55);
+  border-color: rgba(186, 230, 253, 0.9);
+  box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.2);
+}
+.timeline-tick {
+  position: absolute;
+  top: 3px;
+  width: 1px;
+  height: 4px;
+  background: #3b4254;
+  pointer-events: none;
+}
+.timeline-hover-line {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  margin-left: -0.5px;
+  background: rgba(255, 255, 255, 0.35);
+  pointer-events: none;
+}
+.timeline-head {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  width: 2px;
+  margin-left: -1px;
+  background: #f8fafc;
+  border-radius: 1px;
+  box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.45), 0 0 8px rgba(56, 189, 248, 0.4);
+  pointer-events: none;
+}
+.timeline-head::before {
+  content: '';
+  position: absolute;
+  top: -3px;
+  left: 50%;
+  width: 11px;
+  height: 11px;
+  margin-left: -5.5px;
+  border-radius: 999px;
+  background: #fff;
+  border: 2px solid #38bdf8;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  transition: transform 0.12s ease;
+}
+.timeline:hover .timeline-head::before,
+.timeline.is-scrubbing .timeline-head::before {
+  transform: scale(1.15);
 }
 </style>
