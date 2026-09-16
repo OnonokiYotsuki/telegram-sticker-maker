@@ -376,11 +376,11 @@
 
                   <button
                     v-if="isVideo"
-                    @click="applyCropToAll"
+                    @click="applyCropShapeToAll"
                     class="btn-subtle px-2.5 py-1 text-sky-300 hover:text-sky-200"
-                    title="应用当前裁切区域至所有片段"
+                    title="将当前宽高与圆角应用到所有片段，保留各自位置"
                   >
-                    📌 应用于所有片段
+                    📐 同步形状
                   </button>
                 </div>
 
@@ -1276,12 +1276,35 @@ const resetCropCenter = () => {
   }
 }
 
-const applyCropToAll = () => {
+function evenCrop(n: number) {
+  return n - (n % 2)
+}
+
+function clampCropBox(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): [number, number, number, number] {
+  const vw = Math.max(16, props.mediaInfo.width)
+  const vh = Math.max(16, props.mediaInfo.height)
+  const bw = Math.max(16, Math.min(evenCrop(w), evenCrop(vw)))
+  const bh = Math.max(16, Math.min(evenCrop(h), evenCrop(vh)))
+  const bx = evenCrop(Math.max(0, Math.min(Math.round(x), vw - bw)))
+  const by = evenCrop(Math.max(0, Math.min(Math.round(y), vh - bh)))
+  return [bx, by, bw, bh]
+}
+
+const applyCropShapeToAll = () => {
   if (!currentCrop.value) return
-  const cropCopy = [...currentCrop.value] as [number, number, number, number]
+  const [, , sw, sh] = currentCrop.value
   const radiusCopy = cropRadius.value
-  clips.value.forEach(c => {
-    c.crop = [...cropCopy]
+  const vw = Math.max(16, props.mediaInfo.width)
+  const vh = Math.max(16, props.mediaInfo.height)
+  clips.value.forEach((c) => {
+    const ox = c.crop ? c.crop[0] : Math.floor((vw - sw) / 2)
+    const oy = c.crop ? c.crop[1] : Math.floor((vh - sh) / 2)
+    c.crop = clampCropBox(ox, oy, sw, sh)
     c.cropRadius = radiusCopy
     refreshThumbnail(c)
   })
