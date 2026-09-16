@@ -36,6 +36,8 @@
               class="max-w-full max-h-full object-contain pointer-events-auto"
               @timeupdate="onTimeUpdate"
               @loadedmetadata="onLoadedMetadata"
+              @canplay="onCanPlay"
+              @error="onVideoError"
               @play="isPlaying = true"
               @pause="isPlaying = false"
               @click="togglePlay"
@@ -489,9 +491,31 @@ const clips = ref<ClipItem[]>([
 
 const clipThumbnails = ref<Record<string, string>>({})
 
+// MP4/WebM/Ogg are Range-seekable. MKV and others are an FFmpeg pipe; setting
+// video.currentTime only jumps the UI clock, then the live fragments pull it back.
+const RANGE_SEEK_EXTS = ['.mp4', '.webm', '.ogg']
+const nativeRangeSeek = computed(() => {
+  const p = (props.mediaInfo.file_path || '').toLowerCase()
+  const dot = p.lastIndexOf('.')
+  return dot >= 0 && RANGE_SEEK_EXTS.includes(p.slice(dot))
+})
+const streamOffset = ref(0)
+const streamReloadNonce = ref(0)
+const isReloading = ref(false)
+const pendingPlay = ref(false)
+let queuedServerSeek: number | null = null
+let serverSeekTimer: ReturnType<typeof setTimeout> | null = null
+
 const streamUrl = computed(() => {
   const enc = encodeURIComponent(props.mediaInfo.file_path)
-  return `${props.streamBaseUrl}/stream?path=${enc}`
+  const params = [`path=${enc}`]
+  if (!nativeRangeSeek.value && streamOffset.value > 0.001) {
+    params.push(`t=${streamOffset.value.toFixed(3)}`)
+  }
+  if (streamReloadNonce.value) {
+    params.push(`_=${streamReloadNonce.value}`)
+  }
+  return `${props.streamBaseUrl}/stream?${params.join('&')}`
 })
 
 const imagePreviewUrl = computed(() => {
@@ -535,30 +559,66 @@ const toggleMute = () => {
   isMuted.value = videoRef.value.muted
 }
 
-const seekRelative = (delta: number) => {
+const clampTime = (t: number) =>
+  Math.max(0, Math.min(props.mediaInfo.duration || 0, t))
+
+const playbackClock = () => {
+  if (!videoRef.value) return currentTime.value
+  return streamOffset.value + videoRef.value.currentTime
+}
+
+const restartStream = (absolute: number) => {
+  const target = clampTime(absolute)
+  const v = videoRef.value
+  if (v && !v.paused) pendingPlay.value = true
+  if (v) v.pause()
+  isReloading.value = true
+  currentTime.value = target
+  if (Math.abs(streamOffset.value - target) < 0.0005) {
+    streamReloadNonce.value += 1
+  }
+  streamOffset.value = target
+}
+
+const seekTo = (absolute: number) => {
+  const target = clampTime(absolute)
+  currentTime.value = target
   if (!videoRef.value) return
-  const target = Math.max(0, Math.min(props.mediaInfo.duration, videoRef.value.currentTime + delta))
-  videoRef.value.currentTime = target
+
+  if (nativeRangeSeek.value) {
+    videoRef.value.currentTime = target
+    return
+  }
+
+  isReloading.value = true
+  queuedServerSeek = target
+  if (serverSeekTimer != null) clearTimeout(serverSeekTimer)
+  serverSeekTimer = setTimeout(() => {
+    serverSeekTimer = null
+    const t = queuedServerSeek
+    queuedServerSeek = null
+    if (t != null) restartStream(t)
+  }, 100)
+}
+
+const seekRelative = (delta: number) => {
+  const base = isReloading.value ? currentTime.value : playbackClock()
+  seekTo(base + delta)
 }
 
 const onSliderInput = (e: Event) => {
-  const val = parseFloat((e.target as HTMLInputElement).value)
-  currentTime.value = val
-  if (videoRef.value) {
-    videoRef.value.currentTime = val
-  }
+  seekTo(parseFloat((e.target as HTMLInputElement).value))
 }
 
 const onTimeUpdate = () => {
-  if (!videoRef.value) return
-  currentTime.value = videoRef.value.currentTime
+  if (!videoRef.value || isReloading.value) return
+  currentTime.value = playbackClock()
 
-  // Loop preview logic
   if (isLooping.value) {
     const curClip = clips.value[selectedClipIdx.value]
     if (curClip && curClip.endTime > curClip.startTime) {
       if (currentTime.value >= curClip.endTime || currentTime.value < curClip.startTime - 0.2) {
-        videoRef.value.currentTime = curClip.startTime
+        seekTo(curClip.startTime)
       }
     }
   }
@@ -570,13 +630,27 @@ const onLoadedMetadata = () => {
   }
 }
 
+const onCanPlay = () => {
+  if (!isReloading.value) return
+  isReloading.value = false
+  if (pendingPlay.value && videoRef.value) {
+    pendingPlay.value = false
+    videoRef.value.play()
+  }
+}
+
+const onVideoError = () => {
+  isReloading.value = false
+}
+
 const toggleLoopPreview = () => {
   isLooping.value = !isLooping.value
   if (isLooping.value && videoRef.value) {
     const curClip = clips.value[selectedClipIdx.value]
     if (curClip) {
-      videoRef.value.currentTime = curClip.startTime
-      videoRef.value.play()
+      pendingPlay.value = true
+      seekTo(curClip.startTime)
+      if (nativeRangeSeek.value) videoRef.value.play()
     }
   }
 }
@@ -673,7 +747,7 @@ const selectClip = (idx: number) => {
   if (!curClip) return
 
   if (videoRef.value) {
-    videoRef.value.currentTime = curClip.startTime
+    seekTo(curClip.startTime)
   }
 
   if (curClip.crop) {
@@ -688,12 +762,10 @@ const selectClip = (idx: number) => {
 }
 
 const playClip = (idx: number) => {
-  selectClip(idx)
+  pendingPlay.value = true
   isLooping.value = true
-  if (videoRef.value) {
-    videoRef.value.currentTime = clips.value[idx].startTime
-    videoRef.value.play()
-  }
+  selectClip(idx)
+  if (nativeRangeSeek.value) videoRef.value?.play()
 }
 
 const deleteClip = (idx: number) => {
@@ -838,6 +910,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeyDown)
+  if (serverSeekTimer != null) clearTimeout(serverSeekTimer)
   if (videoRef.value) {
     videoRef.value.pause()
   }

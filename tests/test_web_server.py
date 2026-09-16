@@ -1,5 +1,6 @@
 import io
 import os
+import subprocess
 import tempfile
 import threading
 import time
@@ -115,6 +116,34 @@ def test_server_range_stream(web_server):
     finally:
         if os.path.exists(tmp_file):
             os.remove(tmp_file)
+
+
+def test_mkv_preview_stream_honors_seek_t(web_server, tmp_path):
+    mkv_path = tmp_path / "seek.mkv"
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", "testsrc=duration=3:size=320x180:rate=24",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+        "-c:v", "libx264", "-c:a", "aac",
+        str(mkv_path),
+    ]
+    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+
+    enc = urllib.parse.quote(str(mkv_path))
+    url = f"{web_server.get_url()}/stream?path={enc}&t=1.25"
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        assert resp.status == 200
+        assert "video/mp4" in (resp.headers.get("Content-Type") or "")
+        data = resp.read(256 * 1024)
+        assert b"ftyp" in data[:64]
+
+
+def test_app_api_get_stream_url_includes_seek():
+    api = AppAPI()
+    url = api.get_stream_url(r"D:\media\clip.mkv", t=12.5)
+    assert "path=" in url
+    assert "t=12.500" in url
 
 
 def test_app_api():

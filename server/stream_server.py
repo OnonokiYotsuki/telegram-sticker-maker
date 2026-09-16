@@ -176,8 +176,13 @@ class LocalStreamHandler(BaseHTTPRequestHandler):
                 self._copyfile(f)
             return
 
-        # For MKV and other formats: on-the-fly preview remux / transcode to fragmented MP4
-        seek_sec = float(params.get("t", ["0"])[0])
+        # For MKV and other formats: on-the-fly preview remux / transcode to fragmented MP4.
+        # This pipe is not HTTP-Range seekable; the client must pass t= to restart FFmpeg.
+        try:
+            seek_sec = float(params.get("t", ["0"])[0])
+        except (TypeError, ValueError):
+            seek_sec = 0.0
+        seek_sec = max(0.0, seek_sec)
         self.send_response(200)
         self._set_cors_headers()
         self.send_header("Content-Type", "video/mp4")
@@ -191,13 +196,16 @@ class LocalStreamHandler(BaseHTTPRequestHandler):
             "-loglevel", "error",
             "-ss", f"{seek_sec:.3f}",
             "-i", file_path,
+            "-map", "0:v:0",
+            "-map", "0:a:0?",
+            "-sn",
             "-c:v", "libx264",
             "-preset", "ultrafast",
-            "-tune", "zerolatency",
             "-pix_fmt", "yuv420p",
             "-vf", "scale=-2:480",
             "-c:a", "aac",
             "-b:a", "96k",
+            "-avoid_negative_ts", "make_zero",
             "-f", "mp4",
             "-movflags", "frag_keyframe+empty_moov+default_base_moof",
             "pipe:1",
