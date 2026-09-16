@@ -38,6 +38,8 @@ export interface TaskItem {
   endTime?: number
   crop?: [number, number, number, number]
   cropRadius?: number
+  clipGroupId?: string
+  clipId?: string
   status: 'waiting' | 'converting' | 'success' | 'failed'
   progress: number
   statusMsg: string

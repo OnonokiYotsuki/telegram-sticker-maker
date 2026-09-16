@@ -608,6 +608,82 @@ function openTaskClipModal(task: TaskItem) {
   activeClipTask.value = task
 }
 
+function clipGroupTasks(task: TaskItem): TaskItem[] {
+  if (task.clipGroupId) {
+    return tasks.value.filter((t) => t.clipGroupId === task.clipGroupId)
+  }
+  return [task]
+}
+
+function taskToClipItem(task: TaskItem): ClipItem {
+  const start = task.startTime ?? 0
+  const end =
+    task.endTime ?? (task.mediaInfo.is_video ? defaultClipEnd(task.mediaInfo.duration) : 0)
+  return {
+    id: task.clipId || `clip-${task.taskId}`,
+    startTime: start,
+    endTime: end,
+    duration: Math.max(0.1, end - start),
+    emoji: task.emoji || '',
+    keywords: task.keywords,
+    crop: task.crop,
+    cropRadius: task.cropRadius,
+  }
+}
+
+const clipModalSiblings = computed(() =>
+  activeClipTask.value ? clipGroupTasks(activeClipTask.value) : [],
+)
+const clipModalClips = computed(() => clipModalSiblings.value.map(taskToClipItem))
+const clipModalFocusIdx = computed(() => {
+  const current = activeClipTask.value
+  if (!current) return 0
+  const idx = clipModalSiblings.value.findIndex((t) => t.taskId === current.taskId)
+  return idx >= 0 ? idx : 0
+})
+
+function applyClipToTask(task: TaskItem, clip: ClipItem, groupId: string) {
+  if (task.mediaInfo.is_video) {
+    task.startTime = clip.startTime
+    task.endTime = clip.endTime
+    task.clipLabel = `[${clip.startTime.toFixed(3)}s - ${clip.endTime.toFixed(3)}s]`
+  }
+  task.crop = clip.crop
+  task.cropRadius = clip.cropRadius
+  task.emoji = clip.emoji || task.emoji
+  if (clip.keywords != null) task.keywords = clip.keywords
+  task.clipGroupId = groupId
+  task.clipId = clip.id
+  updateTaskOutputPath(task)
+}
+
+function createTaskFromClip(base: TaskItem, clip: ClipItem, groupId: string): TaskItem {
+  const task: TaskItem = {
+    taskId: nextTaskId++,
+    inputPath: base.inputPath,
+    outputPath: '',
+    mediaInfo: base.mediaInfo,
+    emoji: clip.emoji || base.emoji,
+    keywords: clip.keywords ?? base.keywords ?? '',
+    index: 0,
+    clipLabel: base.mediaInfo.is_video
+      ? `[${clip.startTime.toFixed(3)}s - ${clip.endTime.toFixed(3)}s]`
+      : undefined,
+    startTime: base.mediaInfo.is_video ? clip.startTime : undefined,
+    endTime: base.mediaInfo.is_video ? clip.endTime : undefined,
+    crop: clip.crop,
+    cropRadius: clip.cropRadius,
+    clipGroupId: groupId,
+    clipId: clip.id,
+    status: 'waiting',
+    progress: 0,
+    statusMsg: '等待转换',
+    outputSize: 0,
+  }
+  updateTaskOutputPath(task)
+  return task
+}
+
 function handleClipsGenerated(clips: ClipItem[]) {
   if (!activeClipTask.value || clips.length === 0) {
     activeClipTask.value = null
@@ -615,54 +691,53 @@ function handleClipsGenerated(clips: ClipItem[]) {
   }
 
   const baseTask = activeClipTask.value
-  if (clips.length === 1) {
-    const c = clips[0]
-    if (baseTask.mediaInfo.is_video) {
-      baseTask.startTime = c.startTime
-      baseTask.endTime = c.endTime
-      baseTask.clipLabel = `[${c.startTime.toFixed(3)}s - ${c.endTime.toFixed(3)}s]`
-    }
-    baseTask.crop = c.crop
-    baseTask.cropRadius = c.cropRadius
-    baseTask.emoji = c.emoji || baseTask.emoji
-    if (c.keywords != null) baseTask.keywords = c.keywords
-    updateTaskOutputPath(baseTask)
-    appendLog(`[${baseTask.mediaInfo.file_name}] 已更新截取与裁切参数`)
-  } else {
-    const baseIdx = tasks.value.findIndex((t) => t.taskId === baseTask.taskId)
-    const newTasks: TaskItem[] = []
+  const openedClipId = baseTask.clipId || `clip-${baseTask.taskId}`
+  const groupId = baseTask.clipGroupId || `clipgrp-${baseTask.taskId}`
+  const existingGroup = clipGroupTasks(baseTask)
+  let insertAt = tasks.value.findIndex((t) => t.taskId === existingGroup[0]?.taskId)
+  if (insertAt < 0) insertAt = tasks.value.length
 
-    clips.forEach((c, i) => {
-      const task: TaskItem = {
-        taskId: nextTaskId++,
-        inputPath: baseTask.inputPath,
-        outputPath: '',
-        mediaInfo: baseTask.mediaInfo,
-        emoji: c.emoji || baseTask.emoji,
-        keywords: c.keywords ?? baseTask.keywords ?? '',
-        index: baseTask.index + i,
-        clipLabel: `[${c.startTime.toFixed(3)}s - ${c.endTime.toFixed(3)}s]`,
-        startTime: c.startTime,
-        endTime: c.endTime,
-        crop: c.crop,
-        cropRadius: c.cropRadius,
-        status: 'waiting',
-        progress: 0,
-        statusMsg: '等待转换',
-        outputSize: 0,
-      }
-      updateTaskOutputPath(task)
-      newTasks.push(task)
-    })
-
-    tasks.value.splice(baseIdx, 1, ...newTasks)
-    tasks.value.forEach((t, i) => {
-      t.index = i + 1
-      updateTaskOutputPath(t)
-    })
-    appendLog(`[${baseTask.mediaInfo.file_name}] 已生成 ${clips.length} 个截取片段`)
+  const unused = [...existingGroup]
+  const byClipId = new Map<string, TaskItem>()
+  for (const t of existingGroup) {
+    if (t.clipId) byClipId.set(t.clipId, t)
   }
 
+  const takeExisting = (clip: ClipItem): TaskItem | undefined => {
+    if (clip.id && byClipId.has(clip.id)) {
+      const found = byClipId.get(clip.id)!
+      byClipId.delete(clip.id)
+      const i = unused.indexOf(found)
+      if (i >= 0) unused.splice(i, 1)
+      return found
+    }
+    return unused.shift()
+  }
+
+  const rebuilt = clips.map((c) => {
+    const prev = takeExisting(c)
+    if (prev) {
+      applyClipToTask(prev, c, groupId)
+      return prev
+    }
+    return createTaskFromClip(baseTask, c, groupId)
+  })
+
+  const removeIds = new Set(existingGroup.map((t) => t.taskId))
+  const next = tasks.value.filter((t) => !removeIds.has(t.taskId))
+  next.splice(insertAt, 0, ...rebuilt)
+  next.forEach((t, i) => {
+    t.index = i + 1
+    updateTaskOutputPath(t)
+  })
+  tasks.value = next
+  selectedTaskIds.value = new Set(rebuilt.map((t) => t.taskId))
+  lastSelectedTaskId.value =
+    rebuilt.find((t) => t.clipId === openedClipId)?.taskId ?? rebuilt[0].taskId
+
+  appendLog(
+    `[${baseTask.mediaInfo.file_name}] 已保存截取列表，共 ${rebuilt.length} 个贴纸`,
+  )
   activeClipTask.value = null
 }
 
@@ -1528,6 +1603,8 @@ async function triggerAiTagAll() {
       :initial-crop="activeClipTask.crop"
       :initial-crop-radius="activeClipTask.cropRadius"
       :initial-emoji="activeClipTask.emoji"
+      :initial-clips="clipModalClips"
+      :initial-clip-index="clipModalFocusIdx"
       @close="activeClipTask = null"
       @confirm="handleClipsGenerated"
     />

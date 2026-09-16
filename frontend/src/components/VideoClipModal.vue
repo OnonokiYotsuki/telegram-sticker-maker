@@ -631,6 +631,8 @@ const props = defineProps<{
   initialCrop?: [number, number, number, number]
   initialCropRadius?: number
   initialEmoji?: string
+  initialClips?: ClipItem[]
+  initialClipIndex?: number
 }>()
 
 const emit = defineEmits<{
@@ -663,29 +665,52 @@ const defaultCropAspect = ref('1:1')
 const defaultCropRadius = ref(0)
 
 const isVideo = computed(() => !!props.mediaInfo.is_video)
-const cropActive = ref(!!props.initialCrop || !props.mediaInfo.is_video)
-const aspectMode = ref('1:1')
-const cropRadius = ref(clampCropRadius(props.initialCropRadius))
-const currentCrop = ref<[number, number, number, number] | null>(props.initialCrop || null)
 
-const selectedClipIdx = ref(0)
+function resolveInitialClips(): ClipItem[] {
+  if (props.initialClips && props.initialClips.length > 0) {
+    return props.initialClips.map((c, i) => ({
+      id: c.id || `clip-${i + 1}`,
+      startTime: c.startTime,
+      endTime: c.endTime,
+      duration: Math.max(0.1, c.endTime - c.startTime),
+      emoji: c.emoji ?? '',
+      keywords: c.keywords,
+      crop: c.crop,
+      cropRadius: clampCropRadius(c.cropRadius),
+    }))
+  }
+  const start = props.initialStartTime ?? 0
+  const end = props.initialEndTime ?? Math.min(2.5, props.mediaInfo.duration)
+  return [
+    {
+      id: 'clip-1',
+      startTime: start,
+      endTime: end,
+      duration: Math.max(0.1, end - start),
+      emoji: props.initialEmoji ?? '',
+      crop: props.initialCrop,
+      cropRadius: clampCropRadius(props.initialCropRadius),
+    },
+  ]
+}
+
+const clips = ref<ClipItem[]>(resolveInitialClips())
+const selectedClipIdx = ref(
+  Math.max(0, Math.min(props.initialClipIndex ?? 0, clips.value.length - 1)),
+)
+const focusedInit = clips.value[selectedClipIdx.value]
+if (focusedInit) currentTime.value = focusedInit.startTime
+const cropActive = ref(!!focusedInit?.crop || !props.mediaInfo.is_video)
+const aspectMode = ref('1:1')
+const cropRadius = ref(clampCropRadius(focusedInit?.cropRadius ?? props.initialCropRadius))
+const currentCrop = ref<[number, number, number, number] | null>(
+  focusedInit?.crop || props.initialCrop || null,
+)
+
 const hoverTime = ref<number | null>(null)
 const showOverview = ref(true)
 const timelineAction = ref<'idle' | 'scrub' | 'pan' | 'overview'>('idle')
 const isScrubbing = computed(() => timelineAction.value === 'scrub')
-const initStart = props.initialStartTime ?? 0
-const initEnd = props.initialEndTime ?? Math.min(2.5, props.mediaInfo.duration)
-const clips = ref<ClipItem[]>([
-  {
-    id: 'clip-1',
-    startTime: initStart,
-    endTime: initEnd,
-    duration: Math.max(0.1, initEnd - initStart),
-    emoji: props.initialEmoji ?? '',
-    crop: props.initialCrop,
-    cropRadius: clampCropRadius(props.initialCropRadius)
-  }
-])
 
 const clipThumbnails = ref<Record<string, string>>({})
 const selectedClip = computed(() => clips.value[selectedClipIdx.value] ?? null)
@@ -1173,8 +1198,15 @@ const onTimeUpdate = () => {
 }
 
 const onLoadedMetadata = () => {
-  if (videoRef.value) {
-    videoRef.value.volume = 0.5
+  if (!videoRef.value) return
+  videoRef.value.volume = 0.5
+  const t = clips.value[selectedClipIdx.value]?.startTime
+  if (t == null) return
+  if (nativeRangeSeek.value) {
+    videoRef.value.currentTime = t
+    currentTime.value = t
+  } else if (t > 0.001) {
+    seekTo(t)
   }
 }
 
@@ -1542,16 +1574,12 @@ const startProxyCache = () => {
 onMounted(() => {
   window.addEventListener('keydown', onKeyDown)
   clips.value.forEach(c => refreshThumbnail(c))
-  const first = clips.value[0]
-  if (
-    isVideo.value &&
-    first &&
-    timelineDuration.value > 6 &&
-    first.endTime - first.startTime < timelineDuration.value * 0.45
-  ) {
-    zoomToClip(first)
+  if (isVideo.value) {
+    const focused = clips.value[selectedClipIdx.value] || clips.value[0]
+    if (focused) zoomToClip(focused)
   }
 
+  const reopenedGroup = !!(props.initialClips && props.initialClips.length > 0)
   if ((window as any).pywebview?.api?.get_settings) {
     ;(window as any).pywebview.api.get_settings().then((st: any) => {
       if (st.small_step_sec != null) smallStep.value = st.small_step_sec
@@ -1559,10 +1587,10 @@ onMounted(() => {
       if (st.default_crop_aspect) defaultCropAspect.value = st.default_crop_aspect
       if (st.default_crop_radius != null) defaultCropRadius.value = clampCropRadius(st.default_crop_radius)
       if (st.show_timeline_overview != null) showOverview.value = !!st.show_timeline_overview
-      if (!props.initialCrop) {
+      if (!props.initialCrop && !reopenedGroup) {
         aspectMode.value = defaultCropAspect.value
       }
-      if (props.initialCropRadius == null) {
+      if (props.initialCropRadius == null && !reopenedGroup) {
         cropRadius.value = defaultCropRadius.value
         const first = clips.value[0]
         if (first && !first.crop) first.cropRadius = defaultCropRadius.value
