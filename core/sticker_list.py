@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import zipfile
 from datetime import datetime
 from typing import Any, Callable, Iterable, Mapping, Optional
 
@@ -41,6 +42,27 @@ def default_list_name(now: Optional[datetime] = None) -> str:
 def default_bundle_name(now: Optional[datetime] = None) -> str:
     stamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
     return f"sticker_bundle_{stamp}"
+
+
+def default_bundle_zip_name(now: Optional[datetime] = None) -> str:
+    return f"{default_bundle_name(now)}.zip"
+
+
+def zip_directory(src_dir: str, zip_path: str) -> dict[str, Any]:
+    root = os.path.abspath(src_dir)
+    dest = os.path.abspath(zip_path)
+    if not dest.lower().endswith(".zip"):
+        dest += ".zip"
+    parent = os.path.dirname(dest)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as zf:
+        for dirpath, _, filenames in os.walk(root):
+            for name in sorted(filenames):
+                full = os.path.join(dirpath, name)
+                arc = os.path.relpath(full, root).replace("\\", "/")
+                zf.write(full, arcname=arc)
+    return {"path": dest, "bytes": os.path.getsize(dest)}
 
 
 def _as_optional_float(value: Any) -> Optional[float]:
@@ -135,6 +157,7 @@ def write_sticker_bundle(
     dest_dir: str,
     stickers: Iterable[Mapping[str, Any]],
     *,
+    zip_path: str = "",
     progress_callback: Optional[ExportProgressCb] = None,
     cancel_check: Optional[ExportCancelCheck] = None,
 ) -> dict[str, Any]:
@@ -149,6 +172,7 @@ def write_sticker_bundle(
     remapped: list[dict[str, Any]] = []
     rows = [raw for raw in stickers if str(raw.get("input_path") or "").strip()]
     total = len(rows)
+    report_item_path = not bool(zip_path)
 
     for i, raw in enumerate(rows, 1):
         _raise_if_canceled(cancel_check)
@@ -173,20 +197,36 @@ def write_sticker_bundle(
         abs_copied = os.path.join(root, rel.replace("/", os.sep))
         size = os.path.getsize(abs_copied) if os.path.isfile(abs_copied) else 0
         if progress_callback:
-            progress_callback(i, total, raw, phase="done", dest=abs_copied, size=size)
+            progress_callback(
+                i,
+                total,
+                raw,
+                phase="done",
+                dest=abs_copied if report_item_path else "",
+                size=size,
+            )
 
     if not remapped:
         raise StickerListError("没有可复制的源文件")
 
     json_path = os.path.join(root, BUNDLE_JSON_NAME)
     written = write_sticker_list(json_path, remapped, export_mode="sources")
-    return {
+    result: dict[str, Any] = {
         "path": root,
         "json_path": written["path"],
         "count": written["count"],
         "copied": len(path_map),
         "missing": missing,
     }
+    if zip_path:
+        _raise_if_canceled(cancel_check)
+        if progress_callback:
+            progress_callback(len(remapped), max(total, 1), {}, phase="pack")
+        packed = zip_directory(root, zip_path)
+        result["path"] = packed["path"]
+        result["zip_path"] = packed["path"]
+        result["bytes"] = packed["bytes"]
+    return result
 
 
 def format_prepared_name(index: int, emoji: str, ext: str) -> str:

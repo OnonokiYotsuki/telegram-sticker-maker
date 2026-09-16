@@ -27,6 +27,7 @@ from core.pack_output import (
 from core.sticker_list import (
     StickerListError,
     default_bundle_name,
+    default_bundle_zip_name,
     export_prepared_stickers,
     write_sticker_bundle,
 )
@@ -260,9 +261,10 @@ class AppAPI:
     ) -> Dict[str, Any]:
         export_mode = "sources" if mode == "sources" else "list"
         opts = global_options or {}
+        pack_output = bool(opts.get("pack_output", True))
         try:
             dest = (dest_path or "").strip()
-            if export_mode == "sources" and not dest:
+            if export_mode == "sources" and not dest and not pack_output:
                 dest = self._resolve_bundle_dir(directory=directory)
         except StickerListError as e:
             self._log(f"⚠️ 导出列表跳过: {e}")
@@ -337,9 +339,11 @@ class AppAPI:
 
         try:
             if export_mode == "sources":
-                result = write_sticker_bundle(
-                    dest,
+                result = self._export_sources(
                     stickers,
+                    dest,
+                    directory=directory,
+                    opts=opts,
                     progress_callback=progress_callback,
                     cancel_check=lambda: self._canceled,
                 )
@@ -375,6 +379,39 @@ class AppAPI:
             self._log(f"❌ 导出列表失败: {e}")
             self._emit("onExportFinished", False, "", 0, str(e))
             return {"status": "error", "error": str(e)}
+
+    def _export_sources(
+        self,
+        stickers: List[Dict[str, Any]],
+        dest_path: str,
+        directory: str,
+        opts: Dict[str, Any],
+        progress_callback=None,
+        cancel_check=None,
+    ) -> Dict[str, Any]:
+        pack_output = bool(opts.get("pack_output", True))
+        dest = (dest_path or "").strip()
+        extra = {"progress_callback": progress_callback, "cancel_check": cancel_check}
+        if dest.lower().endswith(".zip"):
+            staging = tempfile.mkdtemp(prefix="tg_stickers_bundle_")
+            try:
+                return write_sticker_bundle(staging, stickers, zip_path=dest, **extra)
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+        if dest:
+            return write_sticker_bundle(dest, stickers, **extra)
+
+        out_dir = (directory or "").strip() or self._pack_zip_dir(opts)
+        if pack_output:
+            staging = tempfile.mkdtemp(prefix="tg_stickers_bundle_")
+            try:
+                os.makedirs(out_dir, exist_ok=True)
+                zip_path = os.path.join(os.path.abspath(out_dir), default_bundle_zip_name())
+                return write_sticker_bundle(staging, stickers, zip_path=zip_path, **extra)
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+        dest = self._resolve_bundle_dir(directory=directory)
+        return write_sticker_bundle(dest, stickers, **extra)
 
     def _export_prepared(
         self,

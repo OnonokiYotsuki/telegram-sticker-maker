@@ -16,6 +16,7 @@ from core.sticker_list import (
     StickerListError,
     build_sticker_list_document,
     default_bundle_name,
+    default_bundle_zip_name,
     default_list_name,
     export_prepared_stickers,
     prepared_output_ext,
@@ -33,6 +34,7 @@ def test_default_list_name():
 def test_default_bundle_name():
     name = default_bundle_name(datetime(2026, 9, 16, 12, 0, 0))
     assert name == "sticker_bundle_20260916_120000"
+    assert default_bundle_zip_name(datetime(2026, 9, 16, 12, 0, 0)) == "sticker_bundle_20260916_120000.zip"
 
 
 def test_build_skips_empty_path_and_keeps_clip_fields():
@@ -265,6 +267,27 @@ def test_api_export_sticker_list_to_path(tmp_path):
     assert (dest / "001_🐱.png").is_file()
 
 
+def test_write_sticker_bundle_zip_keeps_sources_layout(tmp_path):
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"src")
+    dest = tmp_path / "stage"
+    zpath = tmp_path / "bundle.zip"
+    result = write_sticker_bundle(
+        str(dest),
+        [{"input_path": str(src), "emoji": "🐱", "start_time": 1, "end_time": 2}],
+        zip_path=str(zpath),
+    )
+    assert result["zip_path"] == str(zpath)
+    assert zpath.is_file()
+    with zipfile.ZipFile(zpath) as zf:
+        names = zf.namelist()
+        assert BUNDLE_JSON_NAME in names
+        assert f"{BUNDLE_SOURCES_DIR}/clip.mp4" in names
+        data = json.loads(zf.read(BUNDLE_JSON_NAME))
+        assert data["export_mode"] == "sources"
+        assert data["stickers"][0]["input_path"] == f"{BUNDLE_SOURCES_DIR}/clip.mp4"
+
+
 def test_api_export_sources_bundle(tmp_path):
     src = tmp_path / "clip.mp4"
     src.write_bytes(b"src")
@@ -279,6 +302,38 @@ def test_api_export_sources_bundle(tmp_path):
     assert res["copied"] == 1
     assert (dest / BUNDLE_JSON_NAME).is_file()
     assert (dest / BUNDLE_SOURCES_DIR / "clip.mp4").is_file()
+
+
+def test_api_export_sources_respects_pack_output(tmp_path):
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"src")
+    out_dir = tmp_path / "out"
+    api = AppAPI()
+    packed = api.export_sticker_list(
+        [{"input_path": str(src), "emoji": "🐱", "start_time": 1, "end_time": 2}],
+        dest_path="",
+        directory=str(out_dir),
+        mode="sources",
+        global_options={"pack_output": True, "custom_output_dir": str(out_dir)},
+    )
+    assert packed["status"] == "ok"
+    assert packed["path"].endswith(".zip")
+    assert os.path.isfile(packed["path"])
+    with zipfile.ZipFile(packed["path"]) as zf:
+        names = zf.namelist()
+        assert BUNDLE_JSON_NAME in names
+        assert any(name.startswith(f"{BUNDLE_SOURCES_DIR}/") for name in names)
+
+    folder = tmp_path / "folder"
+    loose = api.export_sticker_list(
+        [{"input_path": str(src), "emoji": "🐱"}],
+        dest_path=str(folder),
+        mode="sources",
+        global_options={"pack_output": False},
+    )
+    assert loose["status"] == "ok"
+    assert (folder / BUNDLE_JSON_NAME).is_file()
+    assert (folder / BUNDLE_SOURCES_DIR / "clip.mp4").is_file()
 
 
 def test_export_prepared_reports_progress(tmp_path):

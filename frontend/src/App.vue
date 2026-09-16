@@ -1689,7 +1689,9 @@ async function triggerAiTagAll() {
         @click="exportStickerList('sources')"
       >
         <div class="text-xs font-semibold text-white">源文件 + JSON</div>
-        <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">复制原片到文件夹，并附带参数清单</div>
+        <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">
+          {{ globalOptions.pack_output ? '打包原片与参数清单为压缩包' : '复制原片到文件夹，并附带参数清单' }}
+        </div>
       </button>
       <button
         type="button"
@@ -1697,7 +1699,9 @@ async function triggerAiTagAll() {
         @click="exportStickerList('list')"
       >
         <div class="text-xs font-semibold text-white">贴纸列表文件</div>
-        <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">按转换结果输出已裁切的源文件，不压成贴纸码率</div>
+        <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">
+          {{ globalOptions.pack_output ? '按转换结果打包已裁切源文件，不压成贴纸码率' : '按转换结果输出已裁切的源文件，不压成贴纸码率' }}
+        </div>
       </button>
     </div>
     </Teleport>
