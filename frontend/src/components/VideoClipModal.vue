@@ -61,7 +61,7 @@
               v-if="isVideo"
               ref="videoRef"
               :src="streamUrl"
-              class="max-w-full max-h-full object-contain pointer-events-auto"
+              class="absolute inset-0 w-full h-full object-contain pointer-events-auto"
               @timeupdate="onTimeUpdate"
               @loadedmetadata="onLoadedMetadata"
               @canplay="onCanPlay"
@@ -73,7 +73,7 @@
             <img
               v-else
               :src="imagePreviewUrl"
-              class="max-w-full max-h-full object-contain pointer-events-none"
+              class="absolute inset-0 w-full h-full object-contain pointer-events-none"
               alt="裁切预览"
             />
 
