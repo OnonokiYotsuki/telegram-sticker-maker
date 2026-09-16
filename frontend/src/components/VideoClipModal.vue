@@ -173,8 +173,7 @@
                 class="timeline"
                 :class="{
                   'is-scrubbing': timelineAction === 'scrub',
-                  'is-panning': timelineAction === 'pan',
-                  'is-resizing': timelineAction === 'resize'
+                  'is-panning': timelineAction === 'pan'
                 }"
                 role="slider"
                 tabindex="0"
@@ -217,11 +216,6 @@
                   :title="`片段 ${idx + 1}: ${formatTime(clip.startTime)} – ${formatTime(clip.endTime)}`"
                 />
 
-                <template v-if="selectedClip">
-                  <div class="timeline-handle" :style="clipHandleStyle(selectedClip, 'start')" />
-                  <div class="timeline-handle" :style="clipHandleStyle(selectedClip, 'end')" />
-                </template>
-
                 <div
                   v-if="hoverTime != null && timelineAction !== 'pan'"
                   class="timeline-hover-line"
@@ -237,7 +231,7 @@
 
               <div class="flex justify-between text-[10px] font-mono tabular-nums text-slate-500">
                 <span>{{ formatTime(timelineViewStart) }}</span>
-                <span>滚轮缩放 · Shift 平移 · 拖边缘改片段</span>
+                <span>滚轮缩放 · Shift 平移</span>
                 <span>{{ formatTime(timelineViewEnd) }}</span>
               </div>
             </div>
@@ -677,8 +671,8 @@ const currentCrop = ref<[number, number, number, number] | null>(props.initialCr
 const selectedClipIdx = ref(0)
 const hoverTime = ref<number | null>(null)
 const showOverview = ref(true)
-const timelineAction = ref<'idle' | 'scrub' | 'pan' | 'resize' | 'overview'>('idle')
-const isScrubbing = computed(() => timelineAction.value === 'scrub' || timelineAction.value === 'resize')
+const timelineAction = ref<'idle' | 'scrub' | 'pan' | 'overview'>('idle')
+const isScrubbing = computed(() => timelineAction.value === 'scrub')
 const initStart = props.initialStartTime ?? 0
 const initEnd = props.initialEndTime ?? Math.min(2.5, props.mediaInfo.duration)
 const clips = ref<ClipItem[]>([
@@ -747,7 +741,6 @@ const timelineTicks = computed(() => {
 
 let followResumeAt = 0
 let panDrag: { originX: number; originStart: number } | null = null
-let resizeDrag: { idx: number; edge: 'start' | 'end'; origin: number } | null = null
 let overviewDragAnchor = 0
 
 function bumpFollowSuspend() {
@@ -772,14 +765,6 @@ function overviewClipStyle(clip: ClipItem) {
   const left = (clip.startTime / dur) * 100
   const width = Math.max(0.35, ((clip.endTime - clip.startTime) / dur) * 100)
   return { left: `${left}%`, width: `${width}%` }
-}
-
-function clipHandleStyle(clip: ClipItem, edge: 'start' | 'end') {
-  const t = edge === 'start' ? clip.startTime : clip.endTime
-  if (t < timelineViewStart.value - 0.001 || t > timelineViewEnd.value + 0.001) {
-    return { display: 'none' }
-  }
-  return { left: `${timeToPct(t)}%` }
 }
 
 function clampTimelineView(start: number, end: number) {
@@ -1037,36 +1022,6 @@ function timeFromOverviewX(clientX: number) {
   return ratio * timelineDuration.value
 }
 
-function handlePxToTime() {
-  const width = timelineRef.value?.getBoundingClientRect().width || 1
-  return (8 / width) * viewSpan.value
-}
-
-function hitResizeEdge(t: number): 'start' | 'end' | null {
-  const clip = selectedClip.value
-  if (!clip) return null
-  const pad = handlePxToTime()
-  if (Math.abs(t - clip.startTime) <= pad) return 'start'
-  if (Math.abs(t - clip.endTime) <= pad) return 'end'
-  return null
-}
-
-function applyClipTimes(idx: number, start: number, end: number, refresh = false) {
-  const clip = clips.value[idx]
-  if (!clip) return
-  const dur = timelineDuration.value
-  let s = Math.max(0, start)
-  let e = Math.min(dur, end)
-  if (e - s < 0.05) {
-    if (e >= dur) s = Math.max(0, dur - 0.05)
-    else e = Math.min(dur, s + 0.05)
-  }
-  clip.startTime = Number(s.toFixed(3))
-  clip.endTime = Number(e.toFixed(3))
-  clip.duration = clip.endTime - clip.startTime
-  if (refresh) refreshThumbnail(clip)
-}
-
 function endPointerOn(el: HTMLElement, e: PointerEvent) {
   if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
   const rect = el.getBoundingClientRect()
@@ -1078,7 +1033,6 @@ function endPointerOn(el: HTMLElement, e: PointerEvent) {
   if (!inside) hoverTime.value = null
   timelineAction.value = 'idle'
   panDrag = null
-  resizeDrag = null
 }
 
 const onTimelinePointerDown = (e: PointerEvent) => {
@@ -1092,14 +1046,6 @@ const onTimelinePointerDown = (e: PointerEvent) => {
     timelineAction.value = 'pan'
     panDrag = { originX: e.clientX, originStart: timelineViewStart.value }
     bumpFollowSuspend()
-    return
-  }
-
-  const edge = hitResizeEdge(t)
-  if (edge && selectedClip.value) {
-    stopLooping()
-    timelineAction.value = 'resize'
-    resizeDrag = { idx: selectedClipIdx.value, edge, origin: t }
     return
   }
 
@@ -1124,24 +1070,10 @@ const onTimelinePointerMove = (e: PointerEvent) => {
     return
   }
 
-  if (timelineAction.value === 'resize' && resizeDrag) {
-    const clip = clips.value[resizeDrag.idx]
-    if (!clip) return
-    if (resizeDrag.edge === 'start') {
-      applyClipTimes(resizeDrag.idx, Math.min(t, clip.endTime - 0.05), clip.endTime)
-    } else {
-      applyClipTimes(resizeDrag.idx, clip.startTime, Math.max(t, clip.startTime + 0.05))
-    }
-    return
-  }
-
   if (timelineAction.value === 'scrub') seekTo(t)
 }
 
 const onTimelinePointerUp = (e: PointerEvent) => {
-  if (timelineAction.value === 'resize' && resizeDrag) {
-    refreshThumbnail(clips.value[resizeDrag.idx])
-  }
   if (timelineAction.value === 'idle') return
   endPointerOn(e.currentTarget as HTMLElement, e)
 }
@@ -1723,9 +1655,6 @@ onUnmounted(() => {
 .timeline.is-panning {
   cursor: grabbing;
 }
-.timeline.is-resizing {
-  cursor: ew-resize;
-}
 .timeline:focus-visible {
   box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.35);
   border-radius: 6px;
@@ -1762,19 +1691,6 @@ onUnmounted(() => {
   background: rgba(56, 189, 248, 0.52);
   border-color: rgba(186, 230, 253, 0.9);
   box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.2);
-}
-.timeline-handle {
-  position: absolute;
-  top: 20px;
-  width: 7px;
-  height: 20px;
-  margin-left: -3.5px;
-  border-radius: 2px;
-  background: #fff;
-  border: 1px solid #38bdf8;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-  pointer-events: none;
-  z-index: 3;
 }
 .timeline-tick {
   position: absolute;
