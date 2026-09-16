@@ -71,6 +71,7 @@ const keywordsTask = ref<TaskItem | null>(null)
 
 let nextTaskId = 1
 let sessionReady = false
+let bootStarted = false
 let lastSessionJson = ''
 let sessionTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -446,8 +447,13 @@ function setupIpcListeners() {
 }
 
 async function bootApi() {
+  if (bootStarted) return
+  bootStarted = true
   const api = window.pywebview?.api
-  if (!api) return
+  if (!api) {
+    bootStarted = false
+    return
+  }
   try {
     const info = await api.get_info()
     if (info.stream_base_url) {
@@ -478,8 +484,11 @@ async function bootApi() {
 }
 
 async function restoreSession() {
+  if (sessionReady || isRestoring.value) return
+  isRestoring.value = true
   const api = window.pywebview?.api
   if (!api?.load_session) {
+    isRestoring.value = false
     sessionReady = true
     return
   }
@@ -488,11 +497,12 @@ async function restoreSession() {
     const stickers = res.stickers || []
     const missing = res.missing || []
     if (res.status === 'ok' && stickers.length > 0) {
-      isRestoring.value = true
       importCanceled = false
       importHint.value = '正在读取上次进度...'
       importDone.value = 0
       importTotal.value = stickers.length
+      tasks.value = []
+      nextTaskId = 1
       const before = tasks.value.length
       await addImportedStickers(stickers)
       const added = tasks.value.length - before
@@ -521,18 +531,17 @@ async function restoreSession() {
 }
 
 function initPywebview() {
-  if (window.pywebview?.api) {
+  const tryBoot = () => {
+    if (!window.pywebview?.api) return false
     void bootApi()
-    return
+    return true
   }
+  if (tryBoot()) return
   window.addEventListener('pywebviewready', () => {
-    void bootApi()
+    tryBoot()
   }, { once: true })
   const poll = window.setInterval(() => {
-    if (window.pywebview?.api) {
-      window.clearInterval(poll)
-      void bootApi()
-    }
+    if (tryBoot()) window.clearInterval(poll)
   }, 100)
   window.setTimeout(() => window.clearInterval(poll), 15000)
 }
