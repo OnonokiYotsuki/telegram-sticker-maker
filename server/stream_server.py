@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import re
 import shutil
@@ -11,6 +12,7 @@ from PIL import Image
 
 from core.crop_shape import apply_crop_radius, normalize_crop_radius, radius_needs_alpha
 from core.proc import ffmpeg_bin, popen_hidden, run_hidden
+from core.proxy_manager import get_proxy_manager, needs_proxy
 
 _THUMB_FFMPEG_SEMA = threading.Semaphore(2)
 _THUMB_CACHE_LOCK = threading.Lock()
@@ -92,6 +94,10 @@ class LocalStreamHandler(BaseHTTPRequestHandler):
             self._handle_stream(params)
             return
 
+        elif path == "/proxy_status":
+            self._handle_proxy_status(params)
+            return
+
         elif path == "/thumbnail":
             self._handle_thumbnail(params)
             return
@@ -118,6 +124,76 @@ class LocalStreamHandler(BaseHTTPRequestHandler):
 
         self.send_error(404, "Endpoint not found")
 
+    def _serve_file_range(self, file_path: str, mime: str = "video/mp4") -> None:
+        file_size = os.path.getsize(file_path)
+        range_header = self.headers.get("Range")
+
+        if range_header:
+            match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+            if match:
+                start = int(match.group(1))
+                end = int(match.group(2)) if match.group(2) else file_size - 1
+                end = min(end, file_size - 1)
+                length = end - start + 1
+
+                self.send_response(206)
+                self._set_cors_headers()
+                self.send_header("Content-Type", mime)
+                self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                self.send_header("Content-Length", str(length))
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+
+                with open(file_path, "rb") as f:
+                    f.seek(start)
+                    remaining = length
+                    chunk_size = 64 * 1024
+                    while remaining > 0:
+                        read_bytes = min(remaining, chunk_size)
+                        data = f.read(read_bytes)
+                        if not data:
+                            break
+                        if not self._write_body(data):
+                            break
+                        remaining -= len(data)
+                return
+
+        self.send_response(200)
+        self._set_cors_headers()
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(file_size))
+        self.send_header("Accept-Ranges", "bytes")
+        self.end_headers()
+        with open(file_path, "rb") as f:
+            self._copyfile(f)
+
+    def _handle_proxy_status(self, params):
+        raw_path = params.get("path", [""])[0]
+        file_path = unquote(raw_path)
+        if not file_path or not os.path.isfile(file_path):
+            self.send_error(404, f"File not found: {file_path}")
+            return
+
+        start = params.get("start", ["0"])[0] in ("1", "true", "yes")
+        pm = get_proxy_manager()
+        is_needed = needs_proxy(file_path)
+        if is_needed and start:
+            pm.ensure_proxy_async(file_path)
+        task = pm.get_proxy_status(file_path)
+
+        self.send_response(200)
+        self._set_cors_headers()
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        payload = json.dumps({
+            "status": task.status,
+            "progress": round(task.progress, 3),
+            "error": task.error,
+            "needs_proxy": is_needed,
+        })
+        self._write_body(payload.encode("utf-8"))
+
     def _handle_stream(self, params):
         raw_path = params.get("path", [""])[0]
         file_path = unquote(raw_path)
@@ -127,54 +203,19 @@ class LocalStreamHandler(BaseHTTPRequestHandler):
             return
 
         ext = os.path.splitext(file_path)[1].lower()
-        file_size = os.path.getsize(file_path)
 
-        # Standard browser-playable formats: serve with HTTP Range support
-        if ext in (".mp4", ".webm", ".ogg"):
+        if not needs_proxy(file_path):
             mime = "video/mp4" if ext == ".mp4" else ("video/webm" if ext == ".webm" else "video/ogg")
-            range_header = self.headers.get("Range")
-
-            if range_header:
-                match = re.match(r"bytes=(\d+)-(\d*)", range_header)
-                if match:
-                    start = int(match.group(1))
-                    end = int(match.group(2)) if match.group(2) else file_size - 1
-                    end = min(end, file_size - 1)
-                    length = end - start + 1
-
-                    self.send_response(206)
-                    self._set_cors_headers()
-                    self.send_header("Content-Type", mime)
-                    self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
-                    self.send_header("Content-Length", str(length))
-                    self.send_header("Accept-Ranges", "bytes")
-                    self.end_headers()
-
-                    with open(file_path, "rb") as f:
-                        f.seek(start)
-                        remaining = length
-                        chunk_size = 64 * 1024
-                        while remaining > 0:
-                            read_bytes = min(remaining, chunk_size)
-                            data = f.read(read_bytes)
-                            if not data:
-                                break
-                            if not self._write_body(data):
-                                break
-                            remaining -= len(data)
-                    return
-
-            # Full file request
-            self.send_response(200)
-            self._set_cors_headers()
-            self.send_header("Content-Type", mime)
-            self.send_header("Content-Length", str(file_size))
-            self.send_header("Accept-Ranges", "bytes")
-            self.end_headers()
-
-            with open(file_path, "rb") as f:
-                self._copyfile(f)
+            self._serve_file_range(file_path, mime)
             return
+
+        force_live = params.get("live", ["0"])[0].lower() in ("1", "true", "yes")
+        if not force_live:
+            pm = get_proxy_manager()
+            task = pm.get_proxy_status(file_path)
+            if task.status == "ready" and task.proxy_path and os.path.isfile(task.proxy_path):
+                self._serve_file_range(task.proxy_path, "video/mp4")
+                return
 
         # For MKV and other formats: on-the-fly preview remux / transcode to fragmented MP4.
         # This pipe is not HTTP-Range seekable; the client must pass t= to restart FFmpeg.

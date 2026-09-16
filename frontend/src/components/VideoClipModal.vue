@@ -3,21 +3,49 @@
     <div class="bg-[#141720] border border-[#262a35] rounded-xl w-full max-w-[1240px] h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
       
       <!-- Top Bar -->
-      <div class="flex items-center justify-between px-5 py-3 border-b border-[#232731] bg-[#171922]">
-        <div class="flex items-center space-x-2">
+      <div class="flex items-center justify-between px-5 py-3 border-b border-[#232731] bg-[#171922] gap-3">
+        <div class="flex items-center space-x-2 min-w-0">
           <span class="text-lg">✂️</span>
           <span class="font-bold text-white text-sm truncate max-w-md">{{ mediaInfo.file_name }}</span>
         </div>
-        <div class="text-xs text-slate-400 font-mono flex items-center space-x-3">
-          <span v-if="isVideo">时长: <b class="text-sky-400">{{ formatTime(mediaInfo.duration) }}</b></span>
-          <span v-if="isVideo">|</span>
-          <span>{{ mediaInfo.width }}×{{ mediaInfo.height }}</span>
-          <template v-if="isVideo">
-            <span>|</span>
-            <span>{{ Math.round(mediaInfo.fps) }} fps</span>
-            <span>|</span>
-            <span>{{ mediaInfo.video_codec }}</span>
-          </template>
+        <div class="flex items-center space-x-3 shrink-0">
+          <div class="text-xs text-slate-400 font-mono flex items-center space-x-3">
+            <span v-if="isVideo">时长: <b class="text-sky-400">{{ formatTime(mediaInfo.duration) }}</b></span>
+            <span v-if="isVideo">|</span>
+            <span>{{ mediaInfo.width }}×{{ mediaInfo.height }}</span>
+            <template v-if="isVideo">
+              <span>|</span>
+              <span>{{ Math.round(mediaInfo.fps) }} fps</span>
+              <span>|</span>
+              <span>{{ mediaInfo.video_codec }}</span>
+            </template>
+          </div>
+          <button
+            v-if="isVideo && needsProxyFile"
+            type="button"
+            :disabled="proxyReady || proxyLoading"
+            :class="[
+              'px-2.5 py-1 rounded text-[11px] font-semibold transition shrink-0',
+              proxyReady
+                ? 'bg-emerald-950/70 text-emerald-400 border border-emerald-800/50 cursor-default'
+                : proxyLoading
+                  ? 'btn-subtle text-sky-300 cursor-wait'
+                  : proxyError
+                    ? 'btn-subtle text-rose-300'
+                    : 'btn-subtle text-sky-300'
+            ]"
+            :title="proxyReady
+              ? '已使用缓存的流畅预览'
+              : proxyError
+                ? proxyError
+                : '生成可 Range 快进的 480p 代理并缓存到临时目录'"
+            @click="startProxyCache"
+          >
+            <template v-if="proxyReady">已缓存</template>
+            <template v-else-if="proxyLoading">缓存中 {{ proxyProgress }}%</template>
+            <template v-else-if="proxyError">缓存失败 · 重试</template>
+            <template v-else>缓存代理</template>
+          </button>
         </div>
       </div>
 
@@ -530,11 +558,19 @@ const clipThumbnails = ref<Record<string, string>>({})
 // MP4/WebM/Ogg are Range-seekable. MKV and others are an FFmpeg pipe; setting
 // video.currentTime only jumps the UI clock, then the live fragments pull it back.
 const RANGE_SEEK_EXTS = ['.mp4', '.webm', '.ogg']
-const nativeRangeSeek = computed(() => {
+const needsProxyFile = computed(() => {
   const p = (props.mediaInfo.file_path || '').toLowerCase()
   const dot = p.lastIndexOf('.')
-  return dot >= 0 && RANGE_SEEK_EXTS.includes(p.slice(dot))
+  return isVideo.value && (dot < 0 || !RANGE_SEEK_EXTS.includes(p.slice(dot)))
 })
+const proxyReady = ref(false)
+const proxyLoading = ref(false)
+const proxyProgress = ref(0)
+const proxyError = ref<string | null>(null)
+let proxyPollTimer: ReturnType<typeof setTimeout> | null = null
+let pendingProxySeek: number | null = null
+
+const nativeRangeSeek = computed(() => !needsProxyFile.value || proxyReady.value)
 const streamOffset = ref(0)
 const streamReloadNonce = ref(0)
 const isReloading = ref(false)
@@ -545,8 +581,11 @@ let serverSeekTimer: ReturnType<typeof setTimeout> | null = null
 const streamUrl = computed(() => {
   const enc = encodeURIComponent(props.mediaInfo.file_path)
   const params = [`path=${enc}`]
-  if (!nativeRangeSeek.value && streamOffset.value > 0.001) {
-    params.push(`t=${streamOffset.value.toFixed(3)}`)
+  if (!nativeRangeSeek.value) {
+    params.push('live=1')
+    if (streamOffset.value > 0.001) {
+      params.push(`t=${streamOffset.value.toFixed(3)}`)
+    }
   }
   if (streamReloadNonce.value) {
     params.push(`_=${streamReloadNonce.value}`)
@@ -674,6 +713,11 @@ const onLoadedMetadata = () => {
 }
 
 const onCanPlay = () => {
+  if (pendingProxySeek != null && videoRef.value && nativeRangeSeek.value) {
+    const t = pendingProxySeek
+    pendingProxySeek = null
+    videoRef.value.currentTime = t
+  }
   if (!isReloading.value) return
   isReloading.value = false
   if (pendingPlay.value && videoRef.value) {
@@ -943,11 +987,69 @@ const onKeyDown = (e: KeyboardEvent) => {
   }
 }
 
+const applyProxyReady = () => {
+  const clock = isReloading.value ? currentTime.value : playbackClock()
+  const wasPlaying = videoRef.value ? !videoRef.value.paused : false
+  proxyReady.value = true
+  proxyLoading.value = false
+  proxyError.value = null
+  pendingPlay.value = wasPlaying || pendingPlay.value
+  pendingProxySeek = clock
+  streamOffset.value = 0
+  streamReloadNonce.value += 1
+  isReloading.value = true
+}
+
+const checkProxyStatus = async (start = false) => {
+  if (!needsProxyFile.value || !props.streamBaseUrl) return
+  if (proxyPollTimer) {
+    clearTimeout(proxyPollTimer)
+    proxyPollTimer = null
+  }
+  const enc = encodeURIComponent(props.mediaInfo.file_path)
+  const qs = start ? 'start=1' : 'start=0'
+  try {
+    const res = await fetch(`${props.streamBaseUrl}/proxy_status?path=${enc}&${qs}`)
+    if (!res.ok) return
+    const data = await res.json()
+    if (data.status === 'ready' || data.status === 'not_needed') {
+      if (!proxyReady.value) applyProxyReady()
+      else {
+        proxyReady.value = true
+        proxyLoading.value = false
+        proxyError.value = null
+      }
+      return
+    }
+    if (data.status === 'error') {
+      proxyLoading.value = false
+      proxyError.value = data.error || '代理生成失败'
+      return
+    }
+    if (data.status === 'generating' || start) {
+      proxyLoading.value = true
+      proxyProgress.value = Math.min(99, Math.round((data.progress || 0) * 100))
+      proxyPollTimer = setTimeout(() => checkProxyStatus(false), 400)
+    }
+  } catch {
+    if (proxyLoading.value) {
+      proxyPollTimer = setTimeout(() => checkProxyStatus(false), 800)
+    }
+  }
+}
+
+const startProxyCache = () => {
+  if (proxyReady.value || proxyLoading.value) return
+  proxyError.value = null
+  proxyLoading.value = true
+  proxyProgress.value = 0
+  void checkProxyStatus(true)
+}
+
 onMounted(() => {
   window.addEventListener('keydown', onKeyDown)
   clips.value.forEach(c => refreshThumbnail(c))
 
-  // Load step settings from backend if available
   if ((window as any).pywebview?.api?.get_settings) {
     ;(window as any).pywebview.api.get_settings().then((st: any) => {
       if (st.small_step_sec != null) smallStep.value = st.small_step_sec
@@ -962,13 +1064,20 @@ onMounted(() => {
         const first = clips.value[0]
         if (first && !first.crop) first.cropRadius = defaultCropRadius.value
       }
+      if (needsProxyFile.value) void checkProxyStatus(false)
     })
+  } else if (needsProxyFile.value) {
+    void checkProxyStatus(false)
   }
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeyDown)
   if (serverSeekTimer != null) clearTimeout(serverSeekTimer)
+  if (proxyPollTimer) {
+    clearTimeout(proxyPollTimer)
+    proxyPollTimer = null
+  }
   if (videoRef.value) {
     videoRef.value.pause()
   }

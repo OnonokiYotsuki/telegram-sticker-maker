@@ -146,6 +146,67 @@ def test_app_api_get_stream_url_includes_seek():
     assert "t=12.500" in url
 
 
+def test_proxy_status_is_opt_in(web_server, tmp_path):
+    import json
+    from core.proxy_manager import needs_proxy, reset_proxy_manager, set_proxy_cache_dir
+
+    set_proxy_cache_dir(str(tmp_path / "proxies"))
+    reset_proxy_manager()
+    try:
+        mkv_file = str(tmp_path / "optin.mkv")
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-f", "lavfi", "-i", "testsrc=duration=1:size=320x180:rate=15",
+                "-c:v", "libx264", "-preset", "ultrafast",
+                mkv_file,
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        assert needs_proxy(mkv_file)
+
+        enc = urllib.parse.quote(mkv_file)
+        url = f"{web_server.get_url()}/proxy_status?path={enc}&start=0"
+        with urllib.request.urlopen(urllib.request.Request(url)) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        assert data["needs_proxy"] is True
+        assert data["status"] == "not_started"
+
+        start_url = f"{web_server.get_url()}/proxy_status?path={enc}&start=1"
+        with urllib.request.urlopen(urllib.request.Request(start_url)) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        assert data["status"] in ("generating", "ready")
+
+        from core.proxy_manager import get_proxy_manager
+        pm = get_proxy_manager()
+        status = None
+        for _ in range(40):
+            status = pm.get_proxy_status(mkv_file)
+            if status.status in ("ready", "error"):
+                break
+            time.sleep(0.2)
+        assert status.status == "ready", status.error
+
+        stream_url = f"{web_server.get_url()}/stream?path={enc}"
+        req = urllib.request.Request(stream_url, headers={"Range": "bytes=0-99"})
+        with urllib.request.urlopen(req) as resp:
+            assert resp.status == 206
+            assert len(resp.read()) == 100
+
+        api = AppAPI()
+        api_status = api.get_proxy_status(mkv_file, start=False)
+        assert api_status["status"] == "ready"
+        info = api.get_proxy_cache_info()
+        assert info["count"] >= 1
+        cleared = api.clear_proxy_cache()
+        assert cleared["removed"] >= 1
+    finally:
+        reset_proxy_manager()
+        set_proxy_cache_dir(None)
+
+
 def test_app_api():
     api = AppAPI()
     info = api.get_info()

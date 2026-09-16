@@ -27,6 +27,7 @@ from core.pack_output import (
 from core.settings_store import default_output_dir, default_settings
 from core.settings_store import load_settings as load_app_settings
 from core.settings_store import save_settings as save_app_settings
+from core.proxy_manager import get_proxy_manager, needs_proxy
 from server.stream_server import get_stream_server
 
 try:
@@ -149,6 +150,27 @@ class AppAPI:
     def get_stream_url(self, file_path: str, t: float = 0.0) -> str:
         encoded = urllib.parse.quote(file_path)
         return self.stream_server.get_url(f"/stream?path={encoded}&t={t:.3f}")
+
+    def get_proxy_status(self, file_path: str, start: bool = False) -> Dict[str, Any]:
+        if not file_path or not os.path.isfile(file_path):
+            return {"status": "error", "needs_proxy": False, "progress": 0, "error": "File not found"}
+        pm = get_proxy_manager()
+        is_needed = needs_proxy(file_path)
+        if is_needed and start:
+            pm.ensure_proxy_async(file_path)
+        task = pm.get_proxy_status(file_path)
+        return {
+            "status": task.status,
+            "progress": round(task.progress, 3),
+            "error": task.error,
+            "needs_proxy": is_needed,
+        }
+
+    def get_proxy_cache_info(self) -> Dict[str, Any]:
+        return get_proxy_manager().cache_info()
+
+    def clear_proxy_cache(self) -> Dict[str, Any]:
+        return get_proxy_manager().clear_cache()
 
     def get_thumbnail_url(
         self,

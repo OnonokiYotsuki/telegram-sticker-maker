@@ -41,6 +41,7 @@ const globalOptions = ref<GlobalOptions>({
   pack_output: true,
   custom_output_dir: '',
 })
+const proxyCacheHint = ref('')
 
 const isConverting = ref(false)
 const lastPackPath = ref('')
@@ -300,6 +301,14 @@ async function bootApi() {
       globalOptions.value.same_dir = settings.same_dir ?? false
       globalOptions.value.pack_output = settings.pack_output ?? true
       globalOptions.value.custom_output_dir = settings.custom_output_dir || ''
+    }
+    if (api.get_proxy_cache_info) {
+      try {
+        const info = await api.get_proxy_cache_info()
+        proxyCacheHint.value = formatProxyCacheHint(info)
+      } catch {
+        proxyCacheHint.value = ''
+      }
     }
     appendLog('🚀 Telegram Sticker Maker 已准备就绪')
   } catch (e) {
@@ -697,6 +706,35 @@ function handleOpenOutputFolder() {
   }
   if (target && window.pywebview?.api?.open_folder) {
     window.pywebview.api.open_folder(target)
+  }
+}
+
+function formatProxyCacheHint(info: { count: number; bytes: number }) {
+  if (!info || !info.count) return '缓存为空'
+  const mb = info.bytes / (1024 * 1024)
+  const size = mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(info.bytes / 1024))} KB`
+  return `${info.count} 个文件 · ${size}`
+}
+
+async function refreshProxyCacheHint() {
+  const api = window.pywebview?.api
+  if (!api?.get_proxy_cache_info) return
+  try {
+    proxyCacheHint.value = formatProxyCacheHint(await api.get_proxy_cache_info())
+  } catch {
+    proxyCacheHint.value = ''
+  }
+}
+
+async function clearProxyCache() {
+  const api = window.pywebview?.api
+  if (!api?.clear_proxy_cache) return
+  try {
+    await api.clear_proxy_cache()
+    await refreshProxyCacheHint()
+    appendLog('已清除预览代理缓存')
+  } catch (e) {
+    console.error('Failed to clear proxy cache:', e)
   }
 }
 
@@ -1271,6 +1309,21 @@ async function triggerAiTagAll() {
               >
                 浏览...
               </button>
+            </div>
+          </div>
+
+          <div class="space-y-1.5">
+            <h4 class="text-xs font-bold text-white flex items-center gap-1.5">
+              🎞️ 预览代理
+            </h4>
+            <div class="flex items-center gap-2">
+              <button
+                @click="clearProxyCache"
+                class="px-2.5 py-1.5 bg-[#242730] hover:bg-[#2e333e] border border-[#333844] rounded-lg text-gray-200 text-xs font-medium cursor-pointer"
+              >
+                清除预览缓存
+              </button>
+              <span v-if="proxyCacheHint" class="text-[10px] text-gray-500 truncate">{{ proxyCacheHint }}</span>
             </div>
           </div>
         </div>
