@@ -10,6 +10,7 @@ def test_clip_dialog_crop_defaults_roundtrip(tmp_path, monkeypatch):
             "large_step_sec": 10,
             "default_crop_aspect": "16:9",
             "default_crop_radius": 0.5,
+            "show_timeline_overview": False,
         }
     )
     loaded = load_settings()
@@ -17,6 +18,7 @@ def test_clip_dialog_crop_defaults_roundtrip(tmp_path, monkeypatch):
     assert loaded["large_step_sec"] == 10
     assert loaded["default_crop_aspect"] == "16:9"
     assert loaded["default_crop_radius"] == 0.5
+    assert loaded["show_timeline_overview"] is False
 
 
 def test_clip_dialog_rejects_invalid_aspect(tmp_path, monkeypatch):

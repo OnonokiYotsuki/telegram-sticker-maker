@@ -24,6 +24,7 @@ def default_settings() -> Dict[str, Any]:
         "large_step_sec": 5.0,
         "default_crop_aspect": "1:1",
         "default_crop_radius": 0.0,
+        "show_timeline_overview": True,
         "ai_base_url": "https://api.openai.com/v1",
         "ai_model": "gpt-4o-mini",
         "ai_api_key": "",
@@ -78,6 +79,7 @@ _CLIP_DIALOG_KEYS = (
     "large_step_sec",
     "default_crop_aspect",
     "default_crop_radius",
+    "show_timeline_overview",
 )
 
 
@@ -140,6 +142,10 @@ def load_settings() -> Dict[str, Any]:
                     defaults["default_crop_radius"],
                 ),
             ),
+        ),
+        "show_timeline_overview": _as_bool(
+            _get(parser, "clip_dialog", "show_timeline_overview", "true"),
+            defaults["show_timeline_overview"],
         ),
         "ai_base_url": ai_cfg.base_url
         or _get(parser, "ai", "base_url", defaults["ai_base_url"])

@@ -114,6 +114,19 @@
                 <span class="text-slate-500 text-right flex items-center justify-end gap-1.5 shrink-0">
                   <button
                     type="button"
+                    :class="[
+                      'px-1.5 py-0.5 rounded text-[10px] font-sans border',
+                      showOverview
+                        ? 'text-sky-300 bg-sky-500/10 border-sky-500/30 hover:bg-sky-500/20'
+                        : 'text-slate-400 bg-white/5 border-slate-600/60 hover:bg-white/10'
+                    ]"
+                    :title="showOverview ? '隐藏总览条' : '显示总览条'"
+                    @click="toggleOverview"
+                  >
+                    总览
+                  </button>
+                  <button
+                    type="button"
                     class="px-1.5 py-0.5 rounded text-[10px] font-sans text-sky-300 bg-sky-500/10 border border-sky-500/30 hover:bg-sky-500/20"
                     title="把当前片段放到时间轴中间 (F)"
                     @click="zoomToSelectedClip"
@@ -134,6 +147,7 @@
               </div>
 
               <div
+                v-if="showOverview"
                 ref="overviewRef"
                 class="overview"
                 :class="{ 'is-dragging': timelineAction === 'overview' }"
@@ -563,6 +577,10 @@
             </select>
             <p class="text-[11px] text-slate-500 mt-1">新开启裁切、新片段时使用</p>
           </div>
+          <label class="flex items-center justify-between gap-3 cursor-pointer">
+            <span class="text-slate-400">显示时间轴总览条</span>
+            <input type="checkbox" v-model="showOverview" class="accent-sky-500" />
+          </label>
           <div>
             <label class="block text-slate-400 mb-1">默认圆角:</label>
             <div class="flex items-center space-x-2">
@@ -658,6 +676,7 @@ const currentCrop = ref<[number, number, number, number] | null>(props.initialCr
 
 const selectedClipIdx = ref(0)
 const hoverTime = ref<number | null>(null)
+const showOverview = ref(true)
 const timelineAction = ref<'idle' | 'scrub' | 'pan' | 'resize' | 'overview'>('idle')
 const isScrubbing = computed(() => timelineAction.value === 'scrub' || timelineAction.value === 'resize')
 const initStart = props.initialStartTime ?? 0
@@ -1451,18 +1470,29 @@ const resetClipSettings = () => {
   largeStep.value = 5.0
   defaultCropAspect.value = '1:1'
   defaultCropRadius.value = 0
+  showOverview.value = true
 }
 
-const saveClipSettings = () => {
-  showClipSettings.value = false
+function persistClipSettings() {
   if ((window as any).pywebview?.api?.save_settings) {
     ;(window as any).pywebview.api.save_settings({
       small_step_sec: smallStep.value,
       large_step_sec: largeStep.value,
       default_crop_aspect: defaultCropAspect.value,
       default_crop_radius: defaultCropRadius.value,
+      show_timeline_overview: showOverview.value,
     })
   }
+}
+
+function toggleOverview() {
+  showOverview.value = !showOverview.value
+  persistClipSettings()
+}
+
+const saveClipSettings = () => {
+  showClipSettings.value = false
+  persistClipSettings()
 }
 
 const confirmClips = () => {
@@ -1596,6 +1626,7 @@ onMounted(() => {
       if (st.large_step_sec != null) largeStep.value = st.large_step_sec
       if (st.default_crop_aspect) defaultCropAspect.value = st.default_crop_aspect
       if (st.default_crop_radius != null) defaultCropRadius.value = clampCropRadius(st.default_crop_radius)
+      if (st.show_timeline_overview != null) showOverview.value = !!st.show_timeline_overview
       if (!props.initialCrop) {
         aspectMode.value = defaultCropAspect.value
       }
