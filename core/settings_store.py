@@ -22,6 +22,8 @@ def default_settings() -> Dict[str, Any]:
         "zero_pad": True,
         "small_step_sec": 0.5,
         "large_step_sec": 5.0,
+        "default_crop_aspect": "1:1",
+        "default_crop_radius": 0.0,
         "ai_base_url": "https://api.openai.com/v1",
         "ai_model": "gpt-4o-mini",
         "ai_api_key": "",
@@ -70,6 +72,20 @@ def _as_float(value: Any, default: float) -> float:
         return default
 
 
+_CROP_ASPECTS = {"1:1", "free", "original", "16:9", "4:3", "9:16"}
+_CLIP_DIALOG_KEYS = (
+    "small_step_sec",
+    "large_step_sec",
+    "default_crop_aspect",
+    "default_crop_radius",
+)
+
+
+def _as_crop_aspect(value: Any, default: str = "1:1") -> str:
+    raw = str(value or "").strip()
+    return raw if raw in _CROP_ASPECTS else default
+
+
 def load_settings() -> Dict[str, Any]:
     defaults = default_settings()
     parser = _load_ini()
@@ -111,6 +127,20 @@ def load_settings() -> Dict[str, Any]:
         "large_step_sec": _as_float(
             _get(parser, "clip_dialog", "large_step_sec", "5.0"), defaults["large_step_sec"]
         ),
+        "default_crop_aspect": _as_crop_aspect(
+            _get(parser, "clip_dialog", "default_crop_aspect", defaults["default_crop_aspect"]),
+            defaults["default_crop_aspect"],
+        ),
+        "default_crop_radius": max(
+            0.0,
+            min(
+                1.0,
+                _as_float(
+                    _get(parser, "clip_dialog", "default_crop_radius", "0"),
+                    defaults["default_crop_radius"],
+                ),
+            ),
+        ),
         "ai_base_url": ai_cfg.base_url
         or _get(parser, "ai", "base_url", defaults["ai_base_url"])
         or defaults["ai_base_url"],
@@ -126,7 +156,7 @@ def save_settings(data: Dict[str, Any]) -> None:
     path = settings_path()
     parser = _load_ini(path)
     for k, v in data.items():
-        if k in ("small_step_sec", "large_step_sec"):
+        if k in _CLIP_DIALOG_KEYS:
             _ensure_section(parser, "clip_dialog")
             parser.set("clip_dialog", k, str(v))
         elif k.startswith("ai_"):
