@@ -56,7 +56,10 @@
         <div class="flex-1 flex flex-col p-4 space-y-3 min-w-0">
           
           <!-- Video Screen Container -->
-          <div class="flex-1 bg-black rounded-lg border border-[#232731] relative flex items-center justify-center overflow-hidden min-h-[320px]">
+          <div
+            class="flex-1 bg-black rounded-lg border border-[#232731] relative flex items-center justify-center overflow-hidden min-h-[320px]"
+            @wheel.prevent="onTimelineWheel"
+          >
             <video
               v-if="isVideo"
               ref="videoRef"
@@ -94,7 +97,7 @@
           <div class="bg-[#171922] border border-[#262a35] rounded-lg p-3 space-y-2">
             
             <!-- Timeline Scrubber -->
-            <div v-if="isVideo" class="space-y-1" @wheel.prevent="onTimelineWheel">
+            <div v-if="isVideo" class="space-y-1.5" @wheel.prevent="onTimelineWheel">
               <div class="flex items-center justify-between gap-3 text-xs font-mono tabular-nums">
                 <span class="font-semibold text-sky-400 min-w-[5.5rem]">{{ formatTime(currentTime) }}</span>
                 <span v-if="hoverTime != null" class="text-[11px] text-sky-200">
@@ -108,24 +111,57 @@
                   片段 {{ formatTime(selectedClip.startTime) }} – {{ formatTime(selectedClip.endTime) }}
                   <span class="text-slate-500">({{ (selectedClip.endTime - selectedClip.startTime).toFixed(2) }}s)</span>
                 </span>
-                <span class="text-slate-500 min-w-[5.5rem] text-right flex items-center justify-end gap-1.5">
+                <span class="text-slate-500 text-right flex items-center justify-end gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    class="px-1.5 py-0.5 rounded text-[10px] font-sans text-sky-300 bg-sky-500/10 border border-sky-500/30 hover:bg-sky-500/20"
+                    title="把当前片段放到时间轴中间 (F)"
+                    @click="zoomToSelectedClip"
+                  >
+                    适应片段
+                  </button>
                   <button
                     v-if="isTimelineZoomed"
                     type="button"
-                    class="px-1.5 py-0.5 rounded text-[10px] font-sans text-sky-300 bg-sky-500/10 border border-sky-500/30 hover:bg-sky-500/20"
-                    title="双击时间轴也可复位"
+                    class="px-1.5 py-0.5 rounded text-[10px] font-sans text-slate-300 bg-white/5 border border-slate-600/60 hover:bg-white/10"
+                    title="显示完整时长 (0)"
                     @click="resetTimelineZoom"
                   >
-                    复位 {{ viewSpan.toFixed(viewSpan < 2 ? 2 : 1) }}s
+                    全长 {{ viewSpan.toFixed(viewSpan < 2 ? 2 : 1) }}s
                   </button>
                   <span>{{ formatTime(mediaInfo.duration) }}</span>
                 </span>
               </div>
 
               <div
+                ref="overviewRef"
+                class="overview"
+                :class="{ 'is-dragging': timelineAction === 'overview' }"
+                title="总览：拖动窗口平移，点击跳转"
+                @pointerdown="onOverviewPointerDown"
+                @pointermove="onOverviewPointerMove"
+                @pointerup="onOverviewPointerUp"
+                @pointercancel="onOverviewPointerUp"
+              >
+                <div
+                  v-for="(clip, idx) in clips"
+                  :key="'ov-' + clip.id"
+                  class="overview-clip"
+                  :class="{ 'is-active': idx === selectedClipIdx }"
+                  :style="overviewClipStyle(clip)"
+                />
+                <div class="overview-window" :style="overviewWindowStyle" />
+                <div class="overview-head" :style="{ left: overviewPlayheadPct + '%' }" />
+              </div>
+
+              <div
                 ref="timelineRef"
                 class="timeline"
-                :class="{ 'is-scrubbing': isScrubbing }"
+                :class="{
+                  'is-scrubbing': timelineAction === 'scrub',
+                  'is-panning': timelineAction === 'pan',
+                  'is-resizing': timelineAction === 'resize'
+                }"
                 role="slider"
                 tabindex="0"
                 aria-label="播放进度"
@@ -137,7 +173,7 @@
                 @pointerup="onTimelinePointerUp"
                 @pointercancel="onTimelinePointerUp"
                 @pointerleave="onTimelinePointerLeave"
-                @dblclick="resetTimelineZoom"
+                @dblclick="onTimelineDblClick"
               >
                 <div
                   v-for="tick in timelineTicks"
@@ -145,6 +181,14 @@
                   class="timeline-tick"
                   :style="{ left: timeToPct(tick) + '%' }"
                 />
+                <div
+                  v-for="tick in timelineTicks"
+                  :key="'lbl-' + tick"
+                  class="timeline-tick-label"
+                  :style="{ left: timeToPct(tick) + '%' }"
+                >
+                  {{ formatTick(tick) }}
+                </div>
 
                 <div class="timeline-track">
                   <div class="timeline-played" :style="playedStyle" />
@@ -159,13 +203,28 @@
                   :title="`片段 ${idx + 1}: ${formatTime(clip.startTime)} – ${formatTime(clip.endTime)}`"
                 />
 
+                <template v-if="selectedClip">
+                  <div class="timeline-handle" :style="clipHandleStyle(selectedClip, 'start')" />
+                  <div class="timeline-handle" :style="clipHandleStyle(selectedClip, 'end')" />
+                </template>
+
                 <div
-                  v-if="hoverTime != null"
+                  v-if="hoverTime != null && timelineAction !== 'pan'"
                   class="timeline-hover-line"
                   :style="{ left: hoverPct + '%' }"
                 />
 
-                <div class="timeline-head" :style="{ left: progressPct + '%' }" />
+                <div
+                  v-if="progressPct >= -2 && progressPct <= 102"
+                  class="timeline-head"
+                  :style="{ left: progressPct + '%' }"
+                />
+              </div>
+
+              <div class="flex justify-between text-[10px] font-mono tabular-nums text-slate-500">
+                <span>{{ formatTime(timelineViewStart) }}</span>
+                <span>滚轮缩放 · Shift 平移 · 拖边缘改片段</span>
+                <span>{{ formatTime(timelineViewEnd) }}</span>
               </div>
             </div>
 
@@ -569,6 +628,7 @@ const emit = defineEmits<{
 
 const videoRef = ref<HTMLVideoElement | null>(null)
 const timelineRef = ref<HTMLDivElement | null>(null)
+const overviewRef = ref<HTMLDivElement | null>(null)
 const cropOverlayRef = ref<any>(null)
 
 const isPlaying = ref(false)
@@ -598,7 +658,8 @@ const currentCrop = ref<[number, number, number, number] | null>(props.initialCr
 
 const selectedClipIdx = ref(0)
 const hoverTime = ref<number | null>(null)
-const isScrubbing = ref(false)
+const timelineAction = ref<'idle' | 'scrub' | 'pan' | 'resize' | 'overview'>('idle')
+const isScrubbing = computed(() => timelineAction.value === 'scrub' || timelineAction.value === 'resize')
 const initStart = props.initialStartTime ?? 0
 const initEnd = props.initialEndTime ?? Math.min(2.5, props.mediaInfo.duration)
 const clips = ref<ClipItem[]>([
@@ -623,7 +684,7 @@ const inSelectedClip = computed(() => {
 const timelineDuration = computed(() => Math.max(0.0001, props.mediaInfo.duration || 0))
 const timelineViewStart = ref(0)
 const timelineViewEnd = ref(Math.max(0.0001, props.mediaInfo.duration || 0))
-const MIN_VIEW_SEC = 0.2
+const MIN_VIEW_SEC = 0.12
 const viewSpan = computed(() =>
   Math.max(0.0001, timelineViewEnd.value - timelineViewStart.value)
 )
@@ -636,6 +697,16 @@ const playedStyle = computed(() => {
   const pct = Math.max(0, Math.min(100, progressPct.value))
   return { width: `${pct}%` }
 })
+const overviewWindowStyle = computed(() => {
+  const dur = timelineDuration.value
+  return {
+    left: `${(timelineViewStart.value / dur) * 100}%`,
+    width: `${(viewSpan.value / dur) * 100}%`
+  }
+})
+const overviewPlayheadPct = computed(() =>
+  Math.max(0, Math.min(100, (currentTime.value / timelineDuration.value) * 100))
+)
 const timelineTicks = computed(() => {
   const start = timelineViewStart.value
   const end = timelineViewEnd.value
@@ -644,16 +715,25 @@ const timelineTicks = computed(() => {
   const steps = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600]
   let step = steps[steps.length - 1]
   for (const s of steps) {
-    if (span / s <= 12) {
+    if (span / s <= 8) {
       step = s
       break
     }
   }
-  const first = Math.ceil((start + step * 0.04) / step) * step
+  const first = Math.ceil((start + step * 0.08) / step) * step
   const ticks: number[] = []
-  for (let t = first; t < end - step * 0.04; t += step) ticks.push(t)
+  for (let t = first; t < end - step * 0.08; t += step) ticks.push(Number(t.toFixed(6)))
   return ticks
 })
+
+let followResumeAt = 0
+let panDrag: { originX: number; originStart: number } | null = null
+let resizeDrag: { idx: number; edge: 'start' | 'end'; origin: number } | null = null
+let overviewDragAnchor = 0
+
+function bumpFollowSuspend() {
+  followResumeAt = performance.now() + 800
+}
 
 function timeToPct(t: number) {
   return ((t - timelineViewStart.value) / viewSpan.value) * 100
@@ -665,7 +745,22 @@ function clipRangeStyle(clip: ClipItem) {
   if (rightT <= leftT) return { display: 'none' }
   const left = timeToPct(leftT)
   const width = timeToPct(rightT) - left
-  return { left: `${left}%`, width: `${Math.max(0.2, width)}%` }
+  return { left: `${left}%`, width: `${Math.max(0.25, width)}%` }
+}
+
+function overviewClipStyle(clip: ClipItem) {
+  const dur = timelineDuration.value
+  const left = (clip.startTime / dur) * 100
+  const width = Math.max(0.35, ((clip.endTime - clip.startTime) / dur) * 100)
+  return { left: `${left}%`, width: `${width}%` }
+}
+
+function clipHandleStyle(clip: ClipItem, edge: 'start' | 'end') {
+  const t = edge === 'start' ? clip.startTime : clip.endTime
+  if (t < timelineViewStart.value - 0.001 || t > timelineViewEnd.value + 0.001) {
+    return { display: 'none' }
+  }
+  return { left: `${timeToPct(t)}%` }
 }
 
 function clampTimelineView(start: number, end: number) {
@@ -688,31 +783,78 @@ function clampTimelineView(start: number, end: number) {
 function resetTimelineZoom() {
   timelineViewStart.value = 0
   timelineViewEnd.value = timelineDuration.value
+  bumpFollowSuspend()
 }
 
 function panTimelineView(dt: number) {
   clampTimelineView(timelineViewStart.value + dt, timelineViewEnd.value + dt)
 }
 
+function zoomTimelineAt(pivot: number, factor: number) {
+  const oldStart = timelineViewStart.value
+  const oldSpan = viewSpan.value
+  const ratio = oldSpan <= 0 ? 0.5 : Math.max(0, Math.min(1, (pivot - oldStart) / oldSpan))
+  clampTimelineView(pivot - ratio * oldSpan * factor, pivot + (1 - ratio) * oldSpan * factor)
+  bumpFollowSuspend()
+}
+
+function zoomToClip(clip: ClipItem | null | undefined) {
+  if (!clip) return
+  const dur = Math.max(0.08, clip.endTime - clip.startTime)
+  const pad = Math.max(dur * 0.6, 0.2)
+  clampTimelineView(clip.startTime - pad, clip.endTime + pad)
+  bumpFollowSuspend()
+}
+
+function zoomToSelectedClip() {
+  zoomToClip(selectedClip.value)
+}
+
+function keepPlayheadInView(t: number) {
+  if (!isTimelineZoomed.value) return
+  if (performance.now() < followResumeAt) return
+  const start = timelineViewStart.value
+  const span = viewSpan.value
+  const end = timelineViewEnd.value
+  const leftM = start + span * 0.1
+  const rightM = end - span * 0.12
+  if (t >= leftM && t <= rightM) return
+  const target = t - span * 0.35
+  clampTimelineView(target, target + span)
+}
+
+function wheelDeltaPx(e: WheelEvent, axis: 'x' | 'y') {
+  let v = axis === 'x' ? e.deltaX : e.deltaY
+  if (e.deltaMode === 1) v *= 16
+  else if (e.deltaMode === 2) v *= 400
+  return Math.max(-160, Math.min(160, v))
+}
+
+function isPointerOnEl(el: HTMLElement | null, e: { clientX: number; clientY: number }) {
+  if (!el) return false
+  const r = el.getBoundingClientRect()
+  return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom
+}
+
 function onTimelineWheel(e: WheelEvent) {
+  if (!isVideo.value) return
   const dur = timelineDuration.value
   if (dur <= 0) return
 
   const isPan = e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)
+  const bar = timelineRef.value
+  const width = bar?.getBoundingClientRect().width || 1
   if (isPan) {
-    const el = timelineRef.value
-    const width = el?.getBoundingClientRect().width || 1
-    const deltaPx = e.shiftKey ? e.deltaY : e.deltaX
+    const deltaPx = e.shiftKey ? wheelDeltaPx(e, 'y') : wheelDeltaPx(e, 'x')
     panTimelineView((deltaPx / width) * viewSpan.value)
+    bumpFollowSuspend()
     return
   }
 
-  const pivot = timeFromClientX(e.clientX)
-  const oldStart = timelineViewStart.value
-  const oldSpan = viewSpan.value
-  const ratio = oldSpan <= 0 ? 0.5 : (pivot - oldStart) / oldSpan
-  const factor = Math.exp(e.deltaY * 0.003)
-  clampTimelineView(pivot - ratio * oldSpan * factor, pivot + (1 - ratio) * oldSpan * factor)
+  const onBar = isPointerOnEl(bar, e)
+  const pivot = onBar ? timeFromClientX(e.clientX) : currentTime.value
+  const factor = Math.exp(wheelDeltaPx(e, 'y') * 0.00115)
+  zoomTimelineAt(pivot, factor)
 }
 
 // MP4/WebM/Ogg are Range-seekable. MKV and others are an FFmpeg pipe; setting
@@ -766,6 +908,16 @@ const formatTime = (sec: number) => {
   const ms = Math.floor((s - Math.floor(s)) * 1000)
   const pad = (n: number, z = 2) => String(n).padStart(z, '0')
   return `${pad(m)}:${pad(Math.floor(s))}.${pad(ms, 3)}`
+}
+
+function formatTick(t: number) {
+  if (viewSpan.value >= 30) return formatTime(t).slice(0, 5)
+  if (viewSpan.value >= 4) {
+    const m = Math.floor(t / 60)
+    const s = t % 60
+    return `${String(m).padStart(2, '0')}:${s.toFixed(1).padStart(4, '0')}`
+  }
+  return formatTime(t)
 }
 
 const parseTime = (str: string): number | null => {
@@ -857,32 +1009,46 @@ function timeFromClientX(clientX: number) {
   return timelineViewStart.value + ratio * viewSpan.value
 }
 
-const onTimelinePointerDown = (e: PointerEvent) => {
-  if (e.button !== 0) return
-  e.preventDefault()
-  stopLooping()
-  isScrubbing.value = true
-  const t = timeFromClientX(e.clientX)
-  hoverTime.value = t
-  const hit = clips.value.findIndex((c) => t >= c.startTime && t <= c.endTime)
-  if (hit >= 0 && hit !== selectedClipIdx.value) {
-    selectedClipIdx.value = hit
-    applyClipVisuals(clips.value[hit])
+function timeFromOverviewX(clientX: number) {
+  const el = overviewRef.value
+  if (!el) return 0
+  const rect = el.getBoundingClientRect()
+  if (rect.width <= 0) return 0
+  const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+  return ratio * timelineDuration.value
+}
+
+function handlePxToTime() {
+  const width = timelineRef.value?.getBoundingClientRect().width || 1
+  return (8 / width) * viewSpan.value
+}
+
+function hitResizeEdge(t: number): 'start' | 'end' | null {
+  const clip = selectedClip.value
+  if (!clip) return null
+  const pad = handlePxToTime()
+  if (Math.abs(t - clip.startTime) <= pad) return 'start'
+  if (Math.abs(t - clip.endTime) <= pad) return 'end'
+  return null
+}
+
+function applyClipTimes(idx: number, start: number, end: number, refresh = false) {
+  const clip = clips.value[idx]
+  if (!clip) return
+  const dur = timelineDuration.value
+  let s = Math.max(0, start)
+  let e = Math.min(dur, end)
+  if (e - s < 0.05) {
+    if (e >= dur) s = Math.max(0, dur - 0.05)
+    else e = Math.min(dur, s + 0.05)
   }
-  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
-  seekTo(t)
+  clip.startTime = Number(s.toFixed(3))
+  clip.endTime = Number(e.toFixed(3))
+  clip.duration = clip.endTime - clip.startTime
+  if (refresh) refreshThumbnail(clip)
 }
 
-const onTimelinePointerMove = (e: PointerEvent) => {
-  const t = timeFromClientX(e.clientX)
-  hoverTime.value = t
-  if (isScrubbing.value) seekTo(t)
-}
-
-const onTimelinePointerUp = (e: PointerEvent) => {
-  if (!isScrubbing.value) return
-  isScrubbing.value = false
-  const el = e.currentTarget as HTMLElement
+function endPointerOn(el: HTMLElement, e: PointerEvent) {
   if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
   const rect = el.getBoundingClientRect()
   const inside =
@@ -891,10 +1057,118 @@ const onTimelinePointerUp = (e: PointerEvent) => {
     e.clientY >= rect.top &&
     e.clientY <= rect.bottom
   if (!inside) hoverTime.value = null
+  timelineAction.value = 'idle'
+  panDrag = null
+  resizeDrag = null
+}
+
+const onTimelinePointerDown = (e: PointerEvent) => {
+  if (e.button !== 0 && e.button !== 1) return
+  e.preventDefault()
+  const t = timeFromClientX(e.clientX)
+  hoverTime.value = t
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+
+  if (e.button === 1 || e.altKey) {
+    timelineAction.value = 'pan'
+    panDrag = { originX: e.clientX, originStart: timelineViewStart.value }
+    bumpFollowSuspend()
+    return
+  }
+
+  const edge = hitResizeEdge(t)
+  if (edge && selectedClip.value) {
+    stopLooping()
+    timelineAction.value = 'resize'
+    resizeDrag = { idx: selectedClipIdx.value, edge, origin: t }
+    return
+  }
+
+  stopLooping()
+  timelineAction.value = 'scrub'
+  const hit = clips.value.findIndex((c) => t >= c.startTime && t <= c.endTime)
+  if (hit >= 0 && hit !== selectedClipIdx.value) {
+    selectedClipIdx.value = hit
+    applyClipVisuals(clips.value[hit])
+  }
+  seekTo(t)
+}
+
+const onTimelinePointerMove = (e: PointerEvent) => {
+  const t = timeFromClientX(e.clientX)
+  hoverTime.value = t
+
+  if (timelineAction.value === 'pan' && panDrag) {
+    const width = timelineRef.value?.getBoundingClientRect().width || 1
+    const dt = ((panDrag.originX - e.clientX) / width) * viewSpan.value
+    clampTimelineView(panDrag.originStart + dt, panDrag.originStart + dt + viewSpan.value)
+    return
+  }
+
+  if (timelineAction.value === 'resize' && resizeDrag) {
+    const clip = clips.value[resizeDrag.idx]
+    if (!clip) return
+    if (resizeDrag.edge === 'start') {
+      applyClipTimes(resizeDrag.idx, Math.min(t, clip.endTime - 0.05), clip.endTime)
+    } else {
+      applyClipTimes(resizeDrag.idx, clip.startTime, Math.max(t, clip.startTime + 0.05))
+    }
+    return
+  }
+
+  if (timelineAction.value === 'scrub') seekTo(t)
+}
+
+const onTimelinePointerUp = (e: PointerEvent) => {
+  if (timelineAction.value === 'resize' && resizeDrag) {
+    refreshThumbnail(clips.value[resizeDrag.idx])
+  }
+  if (timelineAction.value === 'idle') return
+  endPointerOn(e.currentTarget as HTMLElement, e)
 }
 
 const onTimelinePointerLeave = () => {
-  if (!isScrubbing.value) hoverTime.value = null
+  if (timelineAction.value === 'idle') hoverTime.value = null
+}
+
+const onTimelineDblClick = (e: MouseEvent) => {
+  const t = timeFromClientX(e.clientX)
+  const hit = clips.value.findIndex((c) => t >= c.startTime && t <= c.endTime)
+  if (hit >= 0) {
+    selectedClipIdx.value = hit
+    applyClipVisuals(clips.value[hit])
+    zoomToClip(clips.value[hit])
+    return
+  }
+  resetTimelineZoom()
+}
+
+const onOverviewPointerDown = (e: PointerEvent) => {
+  if (e.button !== 0) return
+  e.preventDefault()
+  const t = timeFromOverviewX(e.clientX)
+  const start = timelineViewStart.value
+  const end = timelineViewEnd.value
+  if (isTimelineZoomed.value && t >= start && t <= end) {
+    overviewDragAnchor = t - start
+  } else {
+    overviewDragAnchor = viewSpan.value / 2
+    clampTimelineView(t - overviewDragAnchor, t - overviewDragAnchor + viewSpan.value)
+  }
+  timelineAction.value = 'overview'
+  bumpFollowSuspend()
+  ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+}
+
+const onOverviewPointerMove = (e: PointerEvent) => {
+  if (timelineAction.value !== 'overview') return
+  const t = timeFromOverviewX(e.clientX)
+  clampTimelineView(t - overviewDragAnchor, t - overviewDragAnchor + viewSpan.value)
+}
+
+const onOverviewPointerUp = (e: PointerEvent) => {
+  if (timelineAction.value !== 'overview') return
+  endPointerOn(e.currentTarget as HTMLElement, e)
 }
 
 const syncPlaybackClock = () => {
@@ -908,6 +1182,10 @@ const syncPlaybackClock = () => {
         seekTo(curClip.startTime)
       }
     }
+  }
+
+  if (isPlaying.value && timelineAction.value === 'idle') {
+    keepPlayheadInView(currentTime.value)
   }
 }
 
@@ -1082,6 +1360,7 @@ const selectClip = (idx: number) => {
     seekTo(curClip.startTime)
   }
   applyClipVisuals(curClip)
+  zoomToClip(curClip)
 }
 
 const playClip = (idx: number) => {
@@ -1224,6 +1503,18 @@ const onKeyDown = (e: KeyboardEvent) => {
   } else if (e.code === 'ArrowRight') {
     e.preventDefault()
     seekRelative(e.shiftKey ? largeStep.value : smallStep.value)
+  } else if (e.key === '=' || e.key === '+') {
+    e.preventDefault()
+    zoomTimelineAt(currentTime.value, 0.84)
+  } else if (e.key === '-' || e.key === '_') {
+    e.preventDefault()
+    zoomTimelineAt(currentTime.value, 1.19)
+  } else if (e.key === '0') {
+    e.preventDefault()
+    resetTimelineZoom()
+  } else if (e.key === 'f' || e.key === 'F') {
+    e.preventDefault()
+    zoomToSelectedClip()
   }
 }
 
@@ -1289,6 +1580,15 @@ const startProxyCache = () => {
 onMounted(() => {
   window.addEventListener('keydown', onKeyDown)
   clips.value.forEach(c => refreshThumbnail(c))
+  const first = clips.value[0]
+  if (
+    isVideo.value &&
+    first &&
+    timelineDuration.value > 6 &&
+    first.endTime - first.startTime < timelineDuration.value * 0.45
+  ) {
+    zoomToClip(first)
+  }
 
   if ((window as any).pywebview?.api?.get_settings) {
     ;(window as any).pywebview.api.get_settings().then((st: any) => {
@@ -1338,13 +1638,62 @@ onUnmounted(() => {
   color: #ffffff;
 }
 
+.overview {
+  position: relative;
+  height: 16px;
+  border-radius: 4px;
+  background: #12141c;
+  border: 1px solid #252833;
+  cursor: pointer;
+  overflow: hidden;
+  touch-action: none;
+}
+.overview.is-dragging {
+  cursor: grabbing;
+}
+.overview-window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(56, 189, 248, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.55);
+  border-radius: 3px;
+  pointer-events: none;
+}
+.overview-clip {
+  position: absolute;
+  top: 3px;
+  height: 10px;
+  border-radius: 1px;
+  background: rgba(56, 189, 248, 0.32);
+  pointer-events: none;
+}
+.overview-clip.is-active {
+  background: rgba(56, 189, 248, 0.75);
+}
+.overview-head {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  margin-left: -0.5px;
+  background: #f8fafc;
+  pointer-events: none;
+}
+
 .timeline {
   position: relative;
-  height: 28px;
+  height: 48px;
   cursor: pointer;
   touch-action: none;
   outline: none;
   overflow: hidden;
+}
+.timeline.is-panning {
+  cursor: grabbing;
+}
+.timeline.is-resizing {
+  cursor: ew-resize;
 }
 .timeline:focus-visible {
   box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.35);
@@ -1354,18 +1703,12 @@ onUnmounted(() => {
   position: absolute;
   left: 0;
   right: 0;
-  top: 50%;
-  height: 6px;
-  transform: translateY(-50%);
+  top: 26px;
+  height: 8px;
   border-radius: 999px;
   background: #1a1d27;
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
   overflow: hidden;
-  transition: height 0.12s ease;
-}
-.timeline:hover .timeline-track,
-.timeline.is-scrubbing .timeline-track {
-  height: 8px;
 }
 .timeline-played {
   height: 100%;
@@ -1375,31 +1718,56 @@ onUnmounted(() => {
 }
 .timeline-clip {
   position: absolute;
-  top: 50%;
-  height: 10px;
-  transform: translateY(-50%);
-  border-radius: 3px;
+  top: 22px;
+  height: 16px;
+  border-radius: 4px;
   background: rgba(56, 189, 248, 0.2);
   border: 1px solid rgba(56, 189, 248, 0.28);
   pointer-events: none;
 }
 .timeline-clip.is-active {
-  height: 12px;
-  background: rgba(56, 189, 248, 0.55);
+  height: 18px;
+  top: 21px;
+  background: rgba(56, 189, 248, 0.52);
   border-color: rgba(186, 230, 253, 0.9);
   box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.2);
 }
+.timeline-handle {
+  position: absolute;
+  top: 20px;
+  width: 7px;
+  height: 20px;
+  margin-left: -3.5px;
+  border-radius: 2px;
+  background: #fff;
+  border: 1px solid #38bdf8;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  z-index: 3;
+}
 .timeline-tick {
   position: absolute;
-  top: 3px;
+  top: 2px;
   width: 1px;
-  height: 4px;
+  height: 6px;
   background: #3b4254;
   pointer-events: none;
 }
+.timeline-tick-label {
+  position: absolute;
+  top: 8px;
+  transform: translateX(-50%);
+  font-size: 9px;
+  line-height: 1;
+  color: #64748b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  white-space: nowrap;
+}
 .timeline-hover-line {
   position: absolute;
-  top: 4px;
+  top: 18px;
   bottom: 4px;
   width: 1px;
   margin-left: -0.5px;
@@ -1408,14 +1776,15 @@ onUnmounted(() => {
 }
 .timeline-head {
   position: absolute;
-  top: 3px;
-  bottom: 3px;
+  top: 16px;
+  bottom: 4px;
   width: 2px;
   margin-left: -1px;
   background: #f8fafc;
   border-radius: 1px;
   box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.45), 0 0 8px rgba(56, 189, 248, 0.4);
   pointer-events: none;
+  z-index: 4;
 }
 .timeline-head::before {
   content: '';
@@ -1429,10 +1798,5 @@ onUnmounted(() => {
   background: #fff;
   border: 2px solid #38bdf8;
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
-  transition: transform 0.12s ease;
-}
-.timeline:hover .timeline-head::before,
-.timeline.is-scrubbing .timeline-head::before {
-  transform: scale(1.15);
 }
 </style>
