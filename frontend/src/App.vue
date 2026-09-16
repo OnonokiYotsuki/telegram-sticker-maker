@@ -1501,7 +1501,7 @@ async function triggerAiTagAll() {
                   @click="exportStickerList('list')"
                 >
                   <div class="text-xs font-semibold text-white">贴纸列表文件</div>
-                  <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">按转换结果输出切好的源文件，不转码</div>
+                  <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">按转换结果输出已裁切的源文件，不压成贴纸码率</div>
                 </button>
               </div>
             </div>

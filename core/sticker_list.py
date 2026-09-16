@@ -7,7 +7,16 @@ import shutil
 from datetime import datetime
 from typing import Any, Iterable, Mapping, Optional
 
-from core.pack_output import PackEntry, pack_stickers, unique_arcname
+from PIL import Image
+
+from core.crop_shape import apply_crop_radius, build_radius_mask_filter, normalize_crop_radius
+from core.pack_output import (
+    STICKERS_JSON_NAME,
+    PackEntry,
+    build_stickers_manifest,
+    pack_stickers,
+    unique_arcname,
+)
 from core.proc import ffmpeg_bin, run_hidden
 
 
@@ -164,6 +173,34 @@ def format_prepared_name(index: int, emoji: str, ext: str) -> str:
     return f"{idx}_{clean}{ext}" if clean else f"{idx}{ext}"
 
 
+def _normalized_crop(crop: list[int]) -> tuple[int, int, int, int]:
+    cx, cy, cw, ch = (int(crop[0]), int(crop[1]), int(crop[2]), int(crop[3]))
+    cw = max(2, cw - (cw % 2))
+    ch = max(2, ch - (ch % 2))
+    cx = max(0, cx - (cx % 2))
+    cy = max(0, cy - (cy % 2))
+    return cx, cy, cw, ch
+
+
+def prepared_output_ext(
+    src: str,
+    *,
+    is_video: bool,
+    crop: Optional[list[int]],
+    radius: float,
+) -> str:
+    orig = os.path.splitext(src)[1] or ".bin"
+    if not crop:
+        return orig
+    if normalize_crop_radius(radius) > 0.001:
+        return ".webm" if is_video else ".png"
+    if is_video:
+        return orig if orig.lower() in {".mp4", ".mov", ".m4v"} else ".mp4"
+    if orig.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+        return orig
+    return ".png"
+
+
 def should_copy_whole_file(
     is_video: bool,
     start_time: Optional[float],
@@ -193,17 +230,33 @@ def extract_source_clip(
     start_time: Optional[float] = None,
     end_time: Optional[float] = None,
     duration: Optional[float] = None,
+    crop: Optional[list[int]] = None,
+    crop_radius: float = 0.0,
 ) -> None:
-    """Copy or stream-copy a clip. Does not transcode."""
+    """Cut/copy a clip. Applies crop shape when given (requires a light encode)."""
     src = os.path.abspath(input_path)
     dest = os.path.abspath(output_path)
     if not os.path.isfile(src):
         raise StickerListError(f"源文件不存在: {src}")
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
-    if src == dest:
+    if src == dest and not crop:
+        return
+    if crop:
+        if is_video:
+            _extract_video_with_crop(
+                src,
+                dest,
+                start_time=start_time,
+                end_time=end_time,
+                crop=crop,
+                crop_radius=crop_radius,
+            )
+        else:
+            _extract_image_with_crop(src, dest, crop=crop, crop_radius=crop_radius)
         return
     if should_copy_whole_file(is_video, start_time, end_time, duration):
-        shutil.copy2(src, dest)
+        if src != dest:
+            shutil.copy2(src, dest)
         return
 
     start = float(start_time or 0)
@@ -232,6 +285,84 @@ def extract_source_clip(
     shutil.copy2(src, dest)
 
 
+def _extract_image_with_crop(
+    src: str,
+    dest: str,
+    crop: list[int],
+    crop_radius: float,
+) -> None:
+    cx, cy, cw, ch = _normalized_crop(crop)
+    with Image.open(src) as img:
+        w, h = img.size
+        right = min(w, cx + cw)
+        bottom = min(h, cy + ch)
+        left = min(max(0, cx), max(0, right - 2))
+        top = min(max(0, cy), max(0, bottom - 2))
+        cropped = img.crop((left, top, right, bottom))
+        if normalize_crop_radius(crop_radius) > 0.001:
+            cropped = apply_crop_radius(cropped, crop_radius)
+        ext = os.path.splitext(dest)[1].lower()
+        save_kw: dict[str, Any] = {}
+        if ext in {".jpg", ".jpeg"}:
+            cropped = cropped.convert("RGB")
+            save_kw["quality"] = 95
+        cropped.save(dest, **save_kw)
+    if not os.path.isfile(dest) or os.path.getsize(dest) == 0:
+        raise StickerListError("裁切图片失败")
+
+
+def _extract_video_with_crop(
+    src: str,
+    dest: str,
+    *,
+    start_time: Optional[float],
+    end_time: Optional[float],
+    crop: list[int],
+    crop_radius: float,
+) -> None:
+    cx, cy, cw, ch = _normalized_crop(crop)
+    vf = f"crop={cw}:{ch}:{cx}:{cy}"
+    radius = normalize_crop_radius(crop_radius)
+    mask = build_radius_mask_filter(radius)
+    if mask:
+        vf = f"{vf},{mask}"
+    start = float(start_time or 0)
+    end = float(end_time) if end_time is not None else None
+    clip_dur = (end - start) if end is not None and end > start else None
+    ffmpeg = ffmpeg_bin()
+    cmd = [ffmpeg, "-y"]
+    if start > 0.02:
+        cmd += ["-ss", f"{start:.3f}"]
+    cmd += ["-i", src]
+    if clip_dur is not None:
+        cmd += ["-t", f"{clip_dur:.3f}"]
+    cmd += ["-vf", vf, "-an", "-sn", "-dn", "-map_metadata", "-1"]
+    if mask:
+        cmd += [
+            "-c:v",
+            "libvpx-vp9",
+            "-pix_fmt",
+            "yuva420p",
+            "-crf",
+            "30",
+            "-b:v",
+            "0",
+            "-auto-alt-ref",
+            "0",
+        ]
+    else:
+        cmd += ["-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p"]
+    cmd.append(dest)
+    if os.path.isfile(dest):
+        os.remove(dest)
+    res = run_hidden(cmd)
+    if res.returncode != 0 or not os.path.isfile(dest) or os.path.getsize(dest) < 512:
+        err = (res.stderr or b"")[-300:]
+        if isinstance(err, bytes):
+            err = err.decode("utf-8", "replace")
+        raise StickerListError(f"裁切视频失败: {err}")
+
+
 def export_prepared_stickers(
     stickers: Iterable[Mapping[str, Any]],
     dest_dir: str,
@@ -254,16 +385,21 @@ def export_prepared_stickers(
             continue
         index = int(raw.get("index") or i)
         emoji = str(raw.get("emoji") or "")
-        ext = os.path.splitext(src)[1] or ".bin"
+        is_video = bool(raw.get("is_video", True))
+        crop = _as_crop(raw.get("crop"))
+        radius = _as_optional_float(raw.get("crop_radius")) or 0.0
+        ext = prepared_output_ext(src, is_video=is_video, crop=crop, radius=radius)
         name = unique_arcname(format_prepared_name(index, emoji, ext), used)
         out_path = os.path.join(root, name)
         extract_source_clip(
             src,
             out_path,
-            is_video=bool(raw.get("is_video", True)),
+            is_video=is_video,
             start_time=_as_optional_float(raw.get("start_time")),
             end_time=_as_optional_float(raw.get("end_time")),
             duration=_as_optional_float(raw.get("duration")),
+            crop=crop,
+            crop_radius=radius,
         )
         entries.append(
             PackEntry(
@@ -277,11 +413,17 @@ def export_prepared_stickers(
     if not entries:
         raise StickerListError("没有可导出的源文件")
 
+    manifest_path = os.path.join(root, STICKERS_JSON_NAME)
+    with open(manifest_path, "w", encoding="utf-8") as fh:
+        json.dump(build_stickers_manifest(entries), fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+
     result: dict[str, Any] = {
         "path": root,
         "count": len(entries),
         "missing": missing,
         "files": [item.arcname for item in entries],
+        "json_path": manifest_path,
     }
     if zip_path:
         packed = pack_stickers(entries, zip_path, allow_any_file=True)

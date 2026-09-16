@@ -4,6 +4,9 @@ import subprocess
 import zipfile
 from datetime import datetime
 
+from PIL import Image
+
+from core.analyzer import MediaAnalyzer
 from core.pack_output import STICKERS_JSON_NAME
 from core.sticker_list import (
     BUNDLE_JSON_NAME,
@@ -168,6 +171,72 @@ def test_export_prepared_stream_copy_clip(tmp_path):
     assert out.is_file()
     assert out.stat().st_size > 512
     assert out.stat().st_size < os.path.getsize(src)
+
+
+def test_export_prepared_applies_image_crop(tmp_path):
+    src = tmp_path / "full.png"
+    img = Image.new("RGB", (100, 80), (255, 0, 0))
+    img.paste((0, 255, 0), (20, 10, 60, 40))
+    img.save(src)
+    dest = tmp_path / "out"
+    export_prepared_stickers(
+        [
+            {
+                "input_path": str(src),
+                "emoji": "✂️",
+                "is_video": False,
+                "index": 1,
+                "crop": [20, 10, 40, 30],
+            }
+        ],
+        str(dest),
+    )
+    out = Image.open(dest / "001_✂️.png")
+    assert out.size == (40, 30)
+    assert out.getpixel((2, 2)) == (0, 255, 0)
+
+
+def test_export_prepared_applies_video_crop(tmp_path):
+    src = str(tmp_path / "sample.mp4")
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=2:size=320x240:rate=24",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            src,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    dest = tmp_path / "out"
+    export_prepared_stickers(
+        [
+            {
+                "input_path": src,
+                "emoji": "🎬",
+                "is_video": True,
+                "index": 1,
+                "start_time": 0,
+                "end_time": 2,
+                "duration": 2,
+                "crop": [32, 16, 160, 120],
+            }
+        ],
+        str(dest),
+    )
+    out = dest / "001_🎬.mp4"
+    assert out.is_file()
+    info = MediaAnalyzer.analyze(str(out))
+    assert info.width == 160
+    assert info.height == 120
 
 
 def test_api_export_sticker_list_to_path(tmp_path):
