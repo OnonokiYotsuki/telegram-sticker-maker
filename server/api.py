@@ -24,6 +24,11 @@ from core.pack_output import (
     pack_stickers,
     unique_arcname,
 )
+from core.sticker_list import (
+    StickerListError,
+    default_list_name,
+    write_sticker_list,
+)
 from core.settings_store import default_output_dir, default_settings
 from core.settings_store import load_settings as load_app_settings
 from core.settings_store import save_settings as save_app_settings
@@ -243,6 +248,52 @@ class AppAPI:
         self._canceled = False
         threading.Thread(target=self._run_conversion_worker, args=(tasks, global_options), daemon=True).start()
         return {"status": "started"}
+
+    def export_sticker_list(
+        self,
+        stickers: List[Dict[str, Any]],
+        dest_path: str = "",
+        directory: str = "",
+    ) -> Dict[str, Any]:
+        try:
+            dest = (dest_path or "").strip()
+            if not dest:
+                dest = self._resolve_list_path(directory=directory)
+            result = write_sticker_list(dest, stickers)
+            self._log(f"📤 已导出贴纸列表 {result['count']} 项 -> {result['path']}")
+            return {"status": "ok", **result}
+        except StickerListError as e:
+            self._log(f"⚠️ 导出列表跳过: {e}")
+            return {"status": "empty", "error": str(e)}
+        except Exception as e:
+            self._log(f"❌ 导出列表失败: {e}")
+            return {"status": "error", "error": str(e)}
+
+    def _resolve_list_path(self, directory: str = "") -> str:
+        if webview.windows:
+            suggested_dir = (directory or "").strip() or default_output_dir()
+            result = None
+            try:
+                os.makedirs(suggested_dir, exist_ok=True)
+                result = webview.windows[0].create_file_dialog(
+                    _file_dialog_type("SAVE"),
+                    directory=suggested_dir,
+                    save_filename=default_list_name(),
+                    file_types=("贴纸列表 (*.json)",),
+                )
+            except Exception:
+                result = None
+            if result:
+                chosen = result[0] if isinstance(result, (list, tuple)) else str(result)
+                if chosen:
+                    dest = os.path.abspath(chosen)
+                    if not dest.lower().endswith(".json"):
+                        dest += ".json"
+                    return dest
+            raise StickerListError("已取消导出")
+        dest_dir = (directory or "").strip() or default_output_dir()
+        os.makedirs(dest_dir, exist_ok=True)
+        return os.path.join(os.path.abspath(dest_dir), default_list_name())
 
     def pack_outputs(
         self,

@@ -918,6 +918,44 @@ async function cancelConversion() {
   }
 }
 
+async function exportStickerList() {
+  if (tasks.value.length === 0) return
+  const payload = tasks.value.map((t) => ({
+    input_path: t.inputPath,
+    file_name: t.mediaInfo.file_name,
+    is_video: t.mediaInfo.is_video,
+    emoji: t.emoji || '',
+    keywords: t.keywords || '',
+    start_time: t.startTime,
+    end_time: t.endTime,
+    crop: t.crop,
+    crop_radius: t.cropRadius || 0,
+    clip_group_id: t.clipGroupId,
+    clip_id: t.clipId,
+    clip_label: t.clipLabel,
+  }))
+  try {
+    if (!window.pywebview?.api?.export_sticker_list) {
+      appendLog('❌ 当前环境不支持导出列表')
+      return
+    }
+    const res = await window.pywebview.api.export_sticker_list(
+      payload,
+      '',
+      globalOptions.value.custom_output_dir || '',
+    )
+    if (res.status === 'ok' && res.path) {
+      appendLog(`📤 已导出贴纸列表 ${res.count} 项 -> ${res.path}`)
+    } else if (res.status === 'empty' && res.error === '已取消导出') {
+      appendLog('已取消导出列表')
+    } else if (res.error) {
+      appendLog(`❌ 导出列表失败: ${res.error}`)
+    }
+  } catch (e) {
+    appendLog(`❌ 导出列表失败: ${e}`)
+  }
+}
+
 async function triggerAiTagAll() {
   if (tasks.value.length === 0) return
   const targets = selectedTaskIds.value.size > 0
@@ -1412,6 +1450,14 @@ async function triggerAiTagAll() {
               class="flex-1 py-2.5 rounded-lg bg-[#24a1de] hover:bg-[#2eb5f7] active:bg-[#1d89be] text-white text-xs font-bold flex items-center justify-center gap-2 shadow-lg shadow-[#24a1de]/20 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               🚀 开始转换
+            </button>
+            <button
+              @click="exportStickerList"
+              :disabled="tasks.length === 0 || isConverting"
+              class="shrink-0 px-3 py-2.5 rounded-lg bg-[#242730] hover:bg-[#2e333e] border border-[#333844] text-gray-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              title="导出当前贴纸列表为 JSON，不进行转码"
+            >
+              📤 导出列表
             </button>
             <label class="shrink-0 flex items-center gap-1.5 cursor-pointer select-none" title="压缩包内额外写入 stickers.json，对应每个贴纸的 emoji 与 keywords">
               <input

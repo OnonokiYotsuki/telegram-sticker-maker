@@ -99,6 +99,11 @@ export interface AppAPI {
     radius?: number | null,
   ) => Promise<string>
   start_conversion: (tasks: Record<string, unknown>[], global_options: Record<string, unknown>) => Promise<{ status: string }>
+  export_sticker_list: (
+    stickers: Record<string, unknown>[],
+    dest_path?: string,
+    directory?: string,
+  ) => Promise<{ status: string; path?: string; count?: number; error?: string }>
   cancel_conversion: () => Promise<void>
   ai_tag_single: (task_id: number, input_path: string, start_time?: number, end_time?: number) => Promise<{ status: string }>
   ai_tag_all: (tasks: Record<string, unknown>[]) => Promise<{ status: string }>
