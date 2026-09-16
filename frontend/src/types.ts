@@ -59,6 +59,8 @@ export interface AppSettings extends GlobalOptions {
   zero_pad?: boolean
   small_step_sec?: number
   large_step_sec?: number
+  default_crop_aspect?: string
+  default_crop_radius?: number
   ai_base_url?: string
   ai_model?: string
   ai_api_key?: string
@@ -81,6 +83,12 @@ export interface AppAPI {
   open_folder: (folder_path: string) => Promise<void>
   analyze_file: (file_path: string) => Promise<MediaInfo>
   get_stream_url: (file_path: string, t?: number) => Promise<string>
+  get_proxy_status: (
+    file_path: string,
+    start?: boolean,
+  ) => Promise<{ status: string; progress: number; error?: string | null; needs_proxy: boolean }>
+  get_proxy_cache_info: () => Promise<{ dir: string; count: number; bytes: number }>
+  clear_proxy_cache: () => Promise<{ removed: number; dir: string; had_bytes: number }>
   get_thumbnail_url: (
     file_path: string,
     t?: number,

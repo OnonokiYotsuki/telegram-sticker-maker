@@ -95,6 +95,13 @@
               >
                 ✂️ 画面裁切
               </button>
+              <button
+                @click="showClipSettings = true"
+                class="btn-subtle px-2 py-1 text-xs"
+                title="裁剪窗口设置"
+              >
+                ⚙️
+              </button>
             </div>
 
             <!-- Button Bar -->
@@ -138,15 +145,6 @@
                   :title="`大快进 +${largeStep}s`"
                 >
                   +{{ largeStep }}s ⏩
-                </button>
-
-                <!-- Step Settings -->
-                <button
-                  @click="showStepModal = true"
-                  class="btn-subtle px-2 py-1 ml-1"
-                  title="设置快进/快退步长"
-                >
-                  ⚙️ 步长
                 </button>
 
                 <div class="h-4 w-px bg-slate-700 mx-1" />
@@ -196,14 +194,22 @@
                 </button>
               </div>
 
-              <!-- Mute -->
-              <button
-                @click="toggleMute"
-                class="text-slate-400 hover:text-white text-base px-2"
-                title="切换静音"
-              >
-                {{ isMuted ? '🔇' : '🔊' }}
-              </button>
+              <div class="flex items-center shrink-0">
+                <button
+                  @click="toggleMute"
+                  class="text-slate-400 hover:text-white text-base px-2"
+                  title="切换静音"
+                >
+                  {{ isMuted ? '🔇' : '🔊' }}
+                </button>
+                <button
+                  @click="showClipSettings = true"
+                  class="btn-subtle px-2 py-1 ml-0.5"
+                  title="裁剪窗口设置"
+                >
+                  ⚙️
+                </button>
+              </div>
             </div>
 
             <!-- Crop Toolbar (when crop active) -->
@@ -215,12 +221,9 @@
                     v-model="aspectMode"
                     class="bg-[#1e222b] border border-[#334155] text-slate-200 rounded px-2 py-1 text-xs outline-none focus:border-sky-500"
                   >
-                    <option value="1:1">1:1 (贴纸/Emoji 推荐)</option>
-                    <option value="free">自由比例</option>
-                    <option value="original">原始比例</option>
-                    <option value="16:9">16:9 (横屏)</option>
-                    <option value="4:3">4:3 (经典)</option>
-                    <option value="9:16">9:16 (竖屏)</option>
+                    <option v-for="opt in cropAspectOptions" :key="opt.value" :value="opt.value">
+                      {{ opt.label }}
+                    </option>
                   </select>
 
                   <button
@@ -383,10 +386,10 @@
 
     </div>
 
-    <!-- Step Settings Modal -->
-    <div v-if="showStepModal" class="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
-      <div class="bg-[#1b1f2b] border border-[#334155] rounded-lg p-5 w-80 space-y-4 shadow-2xl animate-in fade-in zoom-in-95 duration-100">
-        <h3 class="font-bold text-sm text-slate-100">⚙️ 步长快捷设置</h3>
+    <!-- Clip Window Settings -->
+    <div v-if="showClipSettings" class="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+      <div class="bg-[#1b1f2b] border border-[#334155] rounded-lg p-5 w-[22rem] space-y-4 shadow-2xl animate-in fade-in zoom-in-95 duration-100">
+        <h3 class="font-bold text-sm text-slate-100">⚙️ 裁剪窗口设置</h3>
         <div class="space-y-3 text-xs">
           <div>
             <label class="block text-slate-400 mb-1">小快退/快进步长 (秒):</label>
@@ -410,16 +413,46 @@
               class="w-full bg-[#12141a] border border-[#334155] rounded px-2.5 py-1.5 text-slate-100 outline-none focus:border-sky-500 font-mono"
             />
           </div>
+          <div class="h-px bg-[#2a3140]" />
+          <div>
+            <label class="block text-slate-400 mb-1">默认裁切比例:</label>
+            <select
+              v-model="defaultCropAspect"
+              class="w-full bg-[#12141a] border border-[#334155] rounded px-2.5 py-1.5 text-slate-100 outline-none focus:border-sky-500"
+            >
+              <option v-for="opt in cropAspectOptions" :key="opt.value" :value="opt.value">
+                {{ opt.label }}
+              </option>
+            </select>
+            <p class="text-[11px] text-slate-500 mt-1">新开启裁切、新片段时使用</p>
+          </div>
+          <div>
+            <label class="block text-slate-400 mb-1">默认圆角:</label>
+            <div class="flex items-center space-x-2">
+              <span class="text-slate-500 text-[11px] shrink-0">直角</span>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                :value="Math.round(defaultCropRadius * 100)"
+                @input="onDefaultRadiusInput"
+                class="flex-1 h-1.5 bg-[#252833] rounded-lg appearance-none cursor-pointer accent-sky-500"
+              />
+              <span class="text-slate-500 text-[11px] shrink-0">圆形</span>
+              <span class="font-mono text-sky-400 w-16 text-right">{{ cropRadiusLabel(defaultCropRadius) }}</span>
+            </div>
+          </div>
         </div>
         <div class="flex items-center justify-between pt-2">
           <button
-            @click="resetSteps"
+            @click="resetClipSettings"
             class="text-xs text-slate-400 hover:text-slate-200 underline"
           >
-            重置默认 (0.5s / 5s)
+            重置默认
           </button>
           <button
-            @click="saveSteps"
+            @click="saveClipSettings"
             class="bg-sky-500 hover:bg-sky-400 text-white font-semibold text-xs px-3.5 py-1.5 rounded transition"
           >
             确定
@@ -466,7 +499,17 @@ const isLooping = ref(false)
 
 const smallStep = ref(0.5)
 const largeStep = ref(5.0)
-const showStepModal = ref(false)
+const showClipSettings = ref(false)
+const cropAspectOptions = [
+  { value: '1:1', label: '1:1 (贴纸/Emoji 推荐)' },
+  { value: 'free', label: '自由比例' },
+  { value: 'original', label: '原始比例' },
+  { value: '16:9', label: '16:9 (横屏)' },
+  { value: '4:3', label: '4:3 (经典)' },
+  { value: '9:16', label: '9:16 (竖屏)' },
+]
+const defaultCropAspect = ref('1:1')
+const defaultCropRadius = ref(0)
 
 const isVideo = computed(() => !!props.mediaInfo.is_video)
 const cropActive = ref(!!props.initialCrop || !props.mediaInfo.is_video)
@@ -656,8 +699,14 @@ const toggleLoopPreview = () => {
 }
 
 const toggleCrop = () => {
-  cropActive.value = !cropActive.value
   const curClip = clips.value[selectedClipIdx.value]
+  const turningOn = !cropActive.value
+  if (turningOn && curClip && !curClip.crop) {
+    aspectMode.value = defaultCropAspect.value
+    cropRadius.value = defaultCropRadius.value
+    currentCrop.value = null
+  }
+  cropActive.value = turningOn
   if (curClip) {
     if (cropActive.value) {
       if (curClip.crop) {
@@ -666,6 +715,8 @@ const toggleCrop = () => {
       } else if (cropOverlayRef.value) {
         cropOverlayRef.value.resetToDefault()
         curClip.crop = currentCrop.value ? [...currentCrop.value] : undefined
+        curClip.cropRadius = cropRadius.value
+      } else {
         curClip.cropRadius = cropRadius.value
       }
     } else {
@@ -835,18 +886,25 @@ const refreshThumbnail = (clip: ClipItem) => {
   clipThumbnails.value[clip.id] = url
 }
 
-const resetSteps = () => {
-  smallStep.value = 0.5
-  largeStep.value = 5.0
+const onDefaultRadiusInput = (e: Event) => {
+  defaultCropRadius.value = clampCropRadius(parseFloat((e.target as HTMLInputElement).value) / 100)
 }
 
-const saveSteps = () => {
-  showStepModal.value = false
-  // Save to backend if available
+const resetClipSettings = () => {
+  smallStep.value = 0.5
+  largeStep.value = 5.0
+  defaultCropAspect.value = '1:1'
+  defaultCropRadius.value = 0
+}
+
+const saveClipSettings = () => {
+  showClipSettings.value = false
   if ((window as any).pywebview?.api?.save_settings) {
     ;(window as any).pywebview.api.save_settings({
       small_step_sec: smallStep.value,
-      large_step_sec: largeStep.value
+      large_step_sec: largeStep.value,
+      default_crop_aspect: defaultCropAspect.value,
+      default_crop_radius: defaultCropRadius.value,
     })
   }
 }
@@ -871,7 +929,7 @@ const confirmClips = () => {
 // Hotkey listener
 const onKeyDown = (e: KeyboardEvent) => {
   if (!isVideo.value) return
-  if (showStepModal.value) return
+  if (showClipSettings.value) return
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
 
   if (e.code === 'Space') {
@@ -902,8 +960,18 @@ onMounted(() => {
   // Load step settings from backend if available
   if ((window as any).pywebview?.api?.get_settings) {
     ;(window as any).pywebview.api.get_settings().then((st: any) => {
-      if (st.small_step_sec) smallStep.value = st.small_step_sec
-      if (st.large_step_sec) largeStep.value = st.large_step_sec
+      if (st.small_step_sec != null) smallStep.value = st.small_step_sec
+      if (st.large_step_sec != null) largeStep.value = st.large_step_sec
+      if (st.default_crop_aspect) defaultCropAspect.value = st.default_crop_aspect
+      if (st.default_crop_radius != null) defaultCropRadius.value = clampCropRadius(st.default_crop_radius)
+      if (!props.initialCrop) {
+        aspectMode.value = defaultCropAspect.value
+      }
+      if (props.initialCropRadius == null) {
+        cropRadius.value = defaultCropRadius.value
+        const first = clips.value[0]
+        if (first && !first.crop) first.cropRadius = defaultCropRadius.value
+      }
     })
   }
 })
