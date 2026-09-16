@@ -66,8 +66,8 @@
               @loadedmetadata="onLoadedMetadata"
               @canplay="onCanPlay"
               @error="onVideoError"
-              @play="isPlaying = true"
-              @pause="isPlaying = false"
+              @play="onPlay"
+              @pause="onPause"
               @click="togglePlay"
             />
             <img
@@ -577,6 +577,7 @@ const isReloading = ref(false)
 const pendingPlay = ref(false)
 let queuedServerSeek: number | null = null
 let serverSeekTimer: ReturnType<typeof setTimeout> | null = null
+let clockRaf = 0
 
 const streamUrl = computed(() => {
   const enc = encodeURIComponent(props.mediaInfo.file_path)
@@ -692,7 +693,7 @@ const onSliderInput = (e: Event) => {
   seekTo(parseFloat((e.target as HTMLInputElement).value))
 }
 
-const onTimeUpdate = () => {
+const syncPlaybackClock = () => {
   if (!videoRef.value || isReloading.value) return
   currentTime.value = playbackClock()
 
@@ -704,6 +705,38 @@ const onTimeUpdate = () => {
       }
     }
   }
+}
+
+const stopClockLoop = () => {
+  if (!clockRaf) return
+  cancelAnimationFrame(clockRaf)
+  clockRaf = 0
+}
+
+const tickClock = () => {
+  clockRaf = requestAnimationFrame(tickClock)
+  syncPlaybackClock()
+}
+
+const startClockLoop = () => {
+  if (clockRaf) return
+  clockRaf = requestAnimationFrame(tickClock)
+}
+
+const onPlay = () => {
+  isPlaying.value = true
+  startClockLoop()
+}
+
+const onPause = () => {
+  isPlaying.value = false
+  stopClockLoop()
+  syncPlaybackClock()
+}
+
+const onTimeUpdate = () => {
+  if (isPlaying.value) return
+  syncPlaybackClock()
 }
 
 const onLoadedMetadata = () => {
@@ -1073,6 +1106,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeyDown)
+  stopClockLoop()
   if (serverSeekTimer != null) clearTimeout(serverSeekTimer)
   if (proxyPollTimer) {
     clearTimeout(proxyPollTimer)
