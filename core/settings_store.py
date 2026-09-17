@@ -24,6 +24,9 @@ def default_settings() -> Dict[str, Any]:
         "large_step_sec": 5.0,
         "default_crop_aspect": "1:1",
         "default_crop_radius": 0.0,
+        "show_timeline_overview": True,
+        "playback_rate": 1.0,
+        "data_dir": "",
         "ai_base_url": "https://api.openai.com/v1",
         "ai_model": "gpt-4o-mini",
         "ai_api_key": "",
@@ -73,12 +76,20 @@ def _as_float(value: Any, default: float) -> float:
 
 
 _CROP_ASPECTS = {"1:1", "free", "original", "16:9", "4:3", "9:16"}
+_PLAYBACK_RATES = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0)
 _CLIP_DIALOG_KEYS = (
     "small_step_sec",
     "large_step_sec",
     "default_crop_aspect",
     "default_crop_radius",
+    "show_timeline_overview",
+    "playback_rate",
 )
+
+
+def _as_playback_rate(value: Any, default: float = 1.0) -> float:
+    rate = _as_float(value, default)
+    return min(_PLAYBACK_RATES, key=lambda r: abs(r - rate))
 
 
 def _as_crop_aspect(value: Any, default: str = "1:1") -> str:
@@ -141,6 +152,15 @@ def load_settings() -> Dict[str, Any]:
                 ),
             ),
         ),
+        "show_timeline_overview": _as_bool(
+            _get(parser, "clip_dialog", "show_timeline_overview", "true"),
+            defaults["show_timeline_overview"],
+        ),
+        "playback_rate": _as_playback_rate(
+            _get(parser, "clip_dialog", "playback_rate", "1"),
+            defaults["playback_rate"],
+        ),
+        "data_dir": _get(parser, "settings", "data_dir", defaults["data_dir"]).strip(),
         "ai_base_url": ai_cfg.base_url
         or _get(parser, "ai", "base_url", defaults["ai_base_url"])
         or defaults["ai_base_url"],
@@ -153,6 +173,14 @@ def load_settings() -> Dict[str, Any]:
 
 
 def save_settings(data: Dict[str, Any]) -> None:
+    previous_data_dir = ""
+    if "data_dir" in data:
+        from core.app_paths import data_dir as resolve_data_dir
+
+        previous_data_dir = resolve_data_dir()
+        raw_dir = str(data.get("data_dir") or "").strip()
+        data = {**data, "data_dir": os.path.abspath(os.path.expanduser(raw_dir)) if raw_dir else ""}
+
     path = settings_path()
     parser = _load_ini(path)
     for k, v in data.items():
@@ -186,3 +214,10 @@ def save_settings(data: Dict[str, Any]) -> None:
         if "ai_model" in data:
             cfg.model = str(data.get("ai_model") or cfg.model)
         cfg.save()
+
+    if "data_dir" in data:
+        from core.app_paths import apply_data_dir_change
+        from core.proxy_manager import set_proxy_cache_dir
+
+        apply_data_dir_change(previous_data_dir)
+        set_proxy_cache_dir(None)

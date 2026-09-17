@@ -39,6 +39,14 @@ def test_normalize_crop_radius():
     assert normalize_crop_radius("nope") == 0.0
 
 
+def test_crop_radius_label():
+    from core.crop_shape import crop_radius_label
+
+    assert crop_radius_label(0) == "直角"
+    assert crop_radius_label(1) == "圆形"
+    assert crop_radius_label(0.5) == "圆角 50%"
+
+
 def test_radius_needs_alpha():
     assert radius_needs_alpha(0) is False
     assert radius_needs_alpha(0.2) is True

@@ -38,6 +38,9 @@ export interface TaskItem {
   endTime?: number
   crop?: [number, number, number, number]
   cropRadius?: number
+  mirror?: boolean
+  clipGroupId?: string
+  clipId?: string
   status: 'waiting' | 'converting' | 'success' | 'failed'
   progress: number
   statusMsg: string
@@ -61,6 +64,13 @@ export interface AppSettings extends GlobalOptions {
   large_step_sec?: number
   default_crop_aspect?: string
   default_crop_radius?: number
+  show_timeline_overview?: boolean
+  playback_rate?: number
+  data_dir?: string
+  data_dir_resolved?: string
+  session_path?: string
+  proxy_dir?: string
+  import_dir?: string
   ai_base_url?: string
   ai_model?: string
   ai_api_key?: string
@@ -95,22 +105,73 @@ export interface AppAPI {
     crop?: string | null,
     size?: number,
     radius?: number | null,
+    mirror?: boolean,
   ) => Promise<string>
   start_conversion: (tasks: Record<string, unknown>[], global_options: Record<string, unknown>) => Promise<{ status: string }>
+  export_sticker_list: (
+    stickers: Record<string, unknown>[],
+    dest_path?: string,
+    directory?: string,
+    mode?: 'list' | 'sources',
+    global_options?: Record<string, unknown>,
+  ) => Promise<{
+    status: string
+    path?: string
+    json_path?: string
+    zip_path?: string
+    count?: number
+    copied?: number
+    missing?: string[]
+    error?: string
+  }>
+  detect_import_source: (path: string) => Promise<{ status: string; found: boolean }>
+  import_sticker_list: (source_path?: string) => Promise<{
+    status: string
+    mode?: string
+    count?: number
+    stickers?: ImportedSticker[]
+    missing?: string[]
+    error?: string
+  }>
+  save_session: (stickers: Record<string, unknown>[]) => Promise<{ status: string; count?: number; error?: string }>
+  load_session: () => Promise<{
+    status: string
+    stickers?: ImportedSticker[]
+    missing?: string[]
+    count?: number
+    error?: string
+  }>
   cancel_conversion: () => Promise<void>
   ai_tag_single: (task_id: number, input_path: string, start_time?: number, end_time?: number) => Promise<{ status: string }>
   ai_tag_all: (tasks: Record<string, unknown>[]) => Promise<{ status: string }>
 }
 
+export interface ImportedSticker {
+  input_path: string
+  file_name?: string
+  emoji?: string
+  keywords?: string
+  is_video?: boolean
+  start_time?: number
+  end_time?: number
+  crop?: [number, number, number, number]
+  crop_radius?: number
+  mirror?: boolean
+  clip_group_id?: string
+  clip_id?: string
+  clip_label?: string
+}
+
 export interface ClipItem {
   id: string
   startTime: number
-  endTime: number
+  endTime: number | null
   duration: number
   emoji: string
   keywords?: string
   crop?: [number, number, number, number]
   cropRadius?: number
+  mirror?: boolean
 }
 
 declare global {
@@ -132,6 +193,15 @@ declare global {
     onTaskFinished?: (taskId: number, success: boolean, msg: string, outPath: string, size: number) => void
     onAllCompleted?: () => void
     onPackFinished?: (success: boolean, zipPath: string, count: number) => void
+    onExportProgress?: (done: number, total: number, msg: string) => void
+    onExportFinished?: (success: boolean, path: string, count: number, error: string) => void
+    onImportProgress?: (done: number, total: number, msg: string) => void
+    onImportFinished?: (
+      success: boolean,
+      stickers: ImportedSticker[],
+      missing: string[],
+      error: string,
+    ) => void
     onAiItemStarted?: (taskId: number, fileName: string) => void
     onAiItemFinished?: (taskId: number, emoji: string) => void
     onAiItemError?: (taskId: number, err: string) => void

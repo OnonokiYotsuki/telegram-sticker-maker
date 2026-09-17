@@ -158,3 +158,19 @@ def test_crop_in_plan_video():
     assert plan.out_h == 512
     assert "crop=1080:1080:420:0" in plan.vf
 
+
+def test_mirror_in_plan_video():
+    info = _info(width=1920, height=1080, duration=3.0, fps=24.0)
+    opts = EncodeOptions(crop=(420, 0, 1080, 1080), mirror=True)
+    plan = plan_video(info, opts)
+    assert plan.vf.startswith("hflip,")
+    assert "crop=1080:1080:420:0" in plan.vf
+
+
+def test_mirror_without_crop_in_plan_video():
+    info = _info(width=1920, height=1080, duration=3.0, fps=24.0)
+    opts = EncodeOptions(mirror=True)
+    plan = plan_video(info, opts)
+    assert plan.vf.startswith("hflip,")
+    assert "crop=" not in plan.vf
+

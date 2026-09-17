@@ -35,10 +35,9 @@ class AIEmojiConfig:
 
     @classmethod
     def get_config_dir(cls) -> str:
-        home = os.path.expanduser("~")
-        cfg_dir = os.path.join(home, ".config", "telegram_sticker_maker")
-        os.makedirs(cfg_dir, exist_ok=True)
-        return cfg_dir
+        from core.app_paths import config_dir
+
+        return config_dir()
 
     @classmethod
     def get_config_path(cls) -> str:

@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable, Optional
 
+from core.crop_shape import crop_radius_label, normalize_crop_radius
+
 
 STICKER_EXTS = {".webm", ".webp"}
 STICKERS_JSON_NAME = "stickers.json"
@@ -54,10 +56,13 @@ class PackEntry:
     emoji: str = ""
     keywords: tuple[str, ...] = ()
     arcname: str = ""
+    crop_radius: float = 0.0
+    proxy: str = ""
 
     def __post_init__(self):
         object.__setattr__(self, "emoji", (self.emoji or "").strip())
         object.__setattr__(self, "keywords", normalize_keywords(self.keywords))
+        object.__setattr__(self, "crop_radius", normalize_crop_radius(self.crop_radius))
 
 
 class PackError(ValueError):
@@ -67,6 +72,28 @@ class PackError(ValueError):
 def default_zip_name(now: Optional[datetime] = None) -> str:
     stamp = (now or datetime.now()).strftime("%Y%m%d_%H%M%S")
     return f"TG_Stickers_{stamp}.zip"
+
+
+def default_pack_dir_name(now: Optional[datetime] = None) -> str:
+    return os.path.splitext(default_zip_name(now))[0]
+
+
+def unique_output_dir(parent: str, name: str = "") -> str:
+    """Create `parent/name`, appending _2, _3... if the path already exists."""
+    parent = os.path.abspath(parent or ".")
+    os.makedirs(parent, exist_ok=True)
+    folder = (name or "").strip() or default_pack_dir_name()
+    dest = os.path.join(parent, folder)
+    if not os.path.exists(dest):
+        os.makedirs(dest)
+        return dest
+    i = 2
+    while True:
+        candidate = os.path.join(parent, f"{folder}_{i}")
+        if not os.path.exists(candidate):
+            os.makedirs(candidate)
+            return candidate
+        i += 1
 
 
 def unique_arcname(name: str, used: set[str]) -> str:
@@ -85,7 +112,10 @@ def unique_arcname(name: str, used: set[str]) -> str:
         i += 1
 
 
-def resolve_entries(entries: Iterable[PackEntry]) -> list[PackEntry]:
+def resolve_entries(
+    entries: Iterable[PackEntry],
+    allow_any_file: bool = False,
+) -> list[PackEntry]:
     used: set[str] = {STICKERS_JSON_NAME}
     resolved: list[PackEntry] = []
     for entry in entries:
@@ -93,7 +123,7 @@ def resolve_entries(entries: Iterable[PackEntry]) -> list[PackEntry]:
         if not os.path.isfile(path):
             continue
         ext = os.path.splitext(path)[1].lower()
-        if ext not in STICKER_EXTS:
+        if not allow_any_file and ext not in STICKER_EXTS:
             continue
         arc = unique_arcname(entry.arcname or os.path.basename(path), used)
         resolved.append(
@@ -102,6 +132,8 @@ def resolve_entries(entries: Iterable[PackEntry]) -> list[PackEntry]:
                 emoji=(entry.emoji or "").strip(),
                 keywords=normalize_keywords(entry.keywords),
                 arcname=arc,
+                crop_radius=entry.crop_radius,
+                proxy=(entry.proxy or "").replace("\\", "/").strip(),
             )
         )
     return resolved
@@ -110,19 +142,27 @@ def resolve_entries(entries: Iterable[PackEntry]) -> list[PackEntry]:
 def build_stickers_manifest(entries: Iterable[PackEntry]) -> dict:
     stickers = []
     for item in entries:
-        stickers.append(
-            {
-                "file": item.arcname,
-                "emoji": item.emoji or "",
-                "keywords": list(item.keywords),
-            }
-        )
+        row: dict[str, Any] = {
+            "file": item.arcname,
+            "emoji": item.emoji or "",
+            "keywords": list(item.keywords),
+            "crop_radius": round(item.crop_radius, 4),
+            "shape": crop_radius_label(item.crop_radius),
+        }
+        if item.proxy:
+            row["proxy"] = item.proxy.replace("\\", "/")
+        stickers.append(row)
     return {"stickers": stickers}
 
 
-def pack_stickers(entries: Iterable[PackEntry], zip_path: str) -> dict:
+def pack_stickers(
+    entries: Iterable[PackEntry],
+    zip_path: str,
+    allow_any_file: bool = False,
+    extra_files: Optional[Iterable[tuple[str, str]]] = None,
+) -> dict:
     """Write sticker files into a zip. Returns pack stats."""
-    resolved = resolve_entries(entries)
+    resolved = resolve_entries(entries, allow_any_file=allow_any_file)
     if not resolved:
         raise PackError("没有可打包的贴纸文件")
 
@@ -135,6 +175,15 @@ def pack_stickers(entries: Iterable[PackEntry], zip_path: str) -> dict:
         for item in resolved:
             zf.write(item.path, arcname=item.arcname)
         zf.writestr(STICKERS_JSON_NAME, payload)
+        used = {STICKERS_JSON_NAME, *(item.arcname for item in resolved)}
+        for extra_path, extra_arc in extra_files or []:
+            if not extra_path or not os.path.isfile(extra_path):
+                continue
+            arc = (extra_arc or os.path.basename(extra_path)).replace("\\", "/").lstrip("/")
+            if not arc or arc in used:
+                continue
+            zf.write(extra_path, arcname=arc)
+            used.add(arc)
 
     return {
         "path": zip_path,

@@ -244,8 +244,6 @@ watch(
   (val) => {
     if (val && val.length === 4) {
       nativeCrop.value = [...val]
-    } else {
-      resetToDefault()
     }
   },
   { immediate: true }
@@ -353,6 +351,9 @@ onMounted(() => {
   updateDimensions()
   const ro = new ResizeObserver(updateDimensions)
   if (containerRef.value) ro.observe(containerRef.value)
+  if (!props.modelValue || props.modelValue.length !== 4) {
+    resetToDefault()
+  }
 })
 
 defineExpose({

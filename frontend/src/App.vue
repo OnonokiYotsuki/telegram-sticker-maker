@@ -10,7 +10,7 @@ import {
   Film,
   Image as ImageIcon,
 } from 'lucide-vue-next'
-import type { TaskItem, GlobalOptions, ClipItem } from './types'
+import type { TaskItem, GlobalOptions, ClipItem, ImportedSticker } from './types'
 import { clampCropRadius, cropRadiusLabel } from './types'
 import { defaultClipEnd, formatOutputName } from './naming'
 import {
@@ -41,20 +41,89 @@ const globalOptions = ref<GlobalOptions>({
   pack_output: true,
   custom_output_dir: '',
 })
+const proxyCacheHint = ref('')
+const dataDir = ref('')
+const dataDirResolved = ref('')
 
 const isConverting = ref(false)
+const isExporting = ref(false)
+const isImporting = ref(false)
+const isRestoring = ref(false)
+const exportHint = ref('')
+const importHint = ref('')
+const importDone = ref(0)
+const importTotal = ref(0)
 const lastPackPath = ref('')
 const isAiTagging = ref(false)
+const isBusy = computed(
+  () => isConverting.value || isExporting.value || isImporting.value || isRestoring.value,
+)
+let importCanceled = false
 const isDraggingOver = ref(false)
 const showSettings = ref(false)
+const showExportMenu = ref(false)
+const exportBtnRef = ref<HTMLButtonElement | null>(null)
+const exportMenuPos = ref({ top: 0, left: 0 })
 const isLogOpen = ref(false)
 const logs = ref<string[]>([])
 const logContainer = ref<HTMLElement | null>(null)
 const streamBaseUrl = ref('')
 const activeClipTask = ref<TaskItem | null>(null)
-const keywordsTask = ref<TaskItem | null>(null)
+const keywordsTargets = ref<TaskItem[] | null>(null)
+const conversionIds = ref<number[] | null>(null)
 
 let nextTaskId = 1
+let sessionReady = false
+let bootStarted = false
+let lastSessionJson = ''
+let sessionTimer: ReturnType<typeof setTimeout> | null = null
+
+function sessionPayload() {
+  return tasks.value.map((t) => ({
+    input_path: t.inputPath,
+    file_name: t.mediaInfo.file_name,
+    is_video: t.mediaInfo.is_video,
+    emoji: t.emoji || '',
+    keywords: t.keywords || '',
+    start_time: t.startTime,
+    end_time: t.endTime,
+    crop: t.crop,
+    crop_radius: t.cropRadius || 0,
+    mirror: !!t.mirror,
+    clip_group_id: t.clipGroupId,
+    clip_id: t.clipId,
+    clip_label: t.clipLabel,
+    index: t.index,
+  }))
+}
+
+function persistSession(immediate = false) {
+  if (!sessionReady) return
+  const payload = sessionPayload()
+  const json = JSON.stringify(payload)
+  if (json === lastSessionJson) return
+  if (sessionTimer != null) {
+    clearTimeout(sessionTimer)
+    sessionTimer = null
+  }
+  const write = () => {
+    lastSessionJson = json
+    const api = window.pywebview?.api
+    if (api?.save_session) void api.save_session(payload)
+  }
+  if (immediate) write()
+  else sessionTimer = setTimeout(write, 250)
+}
+
+function flushSession() {
+  persistSession(true)
+}
+
+watch(
+  tasks,
+  () => persistSession(false),
+  { deep: true },
+)
 
 const editingEmojiTaskId = ref<number | null>(null)
 const emojiInputRef = ref<HTMLInputElement | null>(null)
@@ -79,16 +148,46 @@ function commitEmojiEdit(task: TaskItem) {
 }
 
 function openKeywordsModal(task: TaskItem) {
-  if (isConverting.value) return
-  keywordsTask.value = task
+  openKeywordsForTasks([task])
+}
+
+function openKeywordsForSelected() {
+  const targets = tasks.value.filter((t) => selectedTaskIds.value.has(t.taskId))
+  openKeywordsForTasks(targets.length ? targets : contextMenu.value.task ? [contextMenu.value.task] : [])
+}
+
+function openKeywordsForTasks(targets: TaskItem[]) {
+  if (isBusy.value || targets.length === 0) return
+  keywordsTargets.value = targets
 }
 
 function saveKeywords(value: string) {
-  if (keywordsTask.value) {
-    keywordsTask.value.keywords = value
+  if (keywordsTargets.value) {
+    for (const task of keywordsTargets.value) {
+      task.keywords = value
+    }
   }
-  keywordsTask.value = null
+  keywordsTargets.value = null
 }
+
+const keywordsModalSeed = computed(() => {
+  const list = keywordsTargets.value
+  if (!list?.length) return ''
+  const first = list[0].keywords || ''
+  return list.every((t) => (t.keywords || '') === first) ? first : ''
+})
+
+const keywordsModalFileName = computed(() => {
+  const list = keywordsTargets.value
+  if (!list?.length) return ''
+  if (list.length === 1) return list[0].mediaInfo.file_name
+  return `已选 ${list.length} 项贴纸`
+})
+
+const keywordsModalEmoji = computed(() => {
+  const list = keywordsTargets.value
+  return list?.length === 1 ? list[0].emoji : ''
+})
 
 function keywordsPreview(raw: string): string {
   const words = clampKeywordList(parseKeywords(raw))
@@ -127,9 +226,77 @@ const taskCounts = computed(() => {
   return { total, waiting, converting, success, failed }
 })
 
+const overallDone = computed(() => taskCounts.value.success + taskCounts.value.failed)
+
+const jobLabel = computed(() => {
+  if (isRestoring.value) return '正在恢复'
+  if (isImporting.value) return '正在导入'
+  if (isExporting.value) return '正在导出'
+  if (isConverting.value) return '正在转码'
+  return ''
+})
+
+const conversionTargetTasks = computed(() => {
+  if (!conversionIds.value) return tasks.value
+  const ids = new Set(conversionIds.value)
+  return tasks.value.filter((t) => ids.has(t.taskId))
+})
+
+const conversionDoneCount = computed(
+  () => conversionTargetTasks.value.filter((t) => t.status === 'success' || t.status === 'failed').length,
+)
+
+const jobDone = computed(() =>
+  isImporting.value || isRestoring.value
+    ? importDone.value
+    : isConverting.value
+      ? conversionDoneCount.value
+      : overallDone.value,
+)
+
+const jobTotal = computed(() =>
+  isImporting.value || isRestoring.value
+    ? importTotal.value
+    : isConverting.value
+      ? conversionTargetTasks.value.length
+      : taskCounts.value.total,
+)
+
+const jobHint = computed(() => {
+  if (isImporting.value || isRestoring.value) return importHint.value
+  if (isExporting.value) return exportHint.value
+  return ''
+})
+
+const overallProgress = computed(() => {
+  if (isImporting.value || isRestoring.value) {
+    if (!importTotal.value) return 0
+    return Math.max(0, Math.min(100, Math.round((importDone.value / importTotal.value) * 100)))
+  }
+  const pool = isConverting.value ? conversionTargetTasks.value : tasks.value
+  const total = pool.length
+  if (!total || !isBusy.value) return 0
+  const sum = pool.reduce((acc, t) => acc + (t.progress || 0), 0)
+  return Math.max(0, Math.min(100, Math.round(sum / total)))
+})
+
 const statusSummaryText = computed(() => {
+  if (isRestoring.value) {
+    const hint = importHint.value ? ` · ${importHint.value}` : ''
+    return `正在恢复: ${importDone.value} 完成 / 共 ${importTotal.value} 项${hint}`
+  }
+  if (isImporting.value) {
+    const hint = importHint.value ? ` · ${importHint.value}` : ''
+    return `正在导入: ${importDone.value} 完成 / 共 ${importTotal.value} 项${hint}`
+  }
+  if (isExporting.value) {
+    const hint = exportHint.value ? ` · ${exportHint.value}` : ''
+    return `正在导出: ${overallDone.value} 完成 / 共 ${taskCounts.value.total} 项${hint}`
+  }
   if (isConverting.value) {
-    return `正在转码: ${taskCounts.value.converting} 进行中, ${taskCounts.value.success} 完成 / 共 ${taskCounts.value.total} 项`
+    const converting = conversionTargetTasks.value.filter((t) => t.status === 'converting').length
+    const success = conversionTargetTasks.value.filter((t) => t.status === 'success').length
+    return `正在转码: ${converting} 进行中, ${success} 完成 / 共 ${conversionTargetTasks.value.length} 项`
   }
   if (taskCounts.value.total === 0) return '就绪'
   return `就绪: 共 ${taskCounts.value.total} 项 (${taskCounts.value.success} 完成, ${taskCounts.value.failed} 失败)`
@@ -171,10 +338,10 @@ watch(
 
 // --- API & IPC Setup ---
 function onKeyDown(e: KeyboardEvent) {
-  if (keywordsTask.value) {
+  if (keywordsTargets.value) {
     if (e.key === 'Escape') {
       e.preventDefault()
-      keywordsTask.value = null
+      keywordsTargets.value = null
     }
     return
   }
@@ -188,7 +355,7 @@ function onKeyDown(e: KeyboardEvent) {
       selectAll()
     }
   } else if (e.key === 'Delete') {
-    if (selectedTaskIds.value.size > 0 && !isConverting.value) {
+    if (selectedTaskIds.value.size > 0 && !isBusy.value) {
       e.preventDefault()
       removeSelectedTasks()
     }
@@ -205,13 +372,39 @@ onMounted(async () => {
   // Close context menu on window click
   window.addEventListener('click', () => {
     contextMenu.value.visible = false
+    showExportMenu.value = false
   })
   window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('pagehide', flushSession)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeyDown)
+  window.removeEventListener('pagehide', flushSession)
+  flushSession()
 })
+
+function placeExportMenu() {
+  const btn = exportBtnRef.value
+  if (!btn) return
+  const r = btn.getBoundingClientRect()
+  const menuWidth = 256
+  const menuHeight = 112
+  const gap = 6
+  const left = Math.min(Math.max(8, r.right - menuWidth), window.innerWidth - menuWidth - 8)
+  const above = r.top - menuHeight - gap
+  const top = above >= 8 ? above : r.bottom + gap
+  exportMenuPos.value = { top, left }
+}
+
+function toggleExportMenu() {
+  if (showExportMenu.value) {
+    showExportMenu.value = false
+    return
+  }
+  placeExportMenu()
+  showExportMenu.value = true
+}
 
 function appendLog(msg: string) {
   const time = new Date().toLocaleTimeString()
@@ -231,7 +424,7 @@ function setupIpcListeners() {
     if (t) {
       t.status = 'converting'
       t.progress = 0
-      t.statusMsg = '正在转码...'
+      t.statusMsg = isExporting.value ? '正在导出...' : '正在转码...'
     }
   }
 
@@ -256,11 +449,35 @@ function setupIpcListeners() {
 
   window.onAllCompleted = () => {
     isConverting.value = false
+    conversionIds.value = null
     appendLog('🎉 批量转换已全部完成！')
   }
 
   window.onPackFinished = (success: boolean, zipPath: string, _count: number) => {
     if (success && zipPath) lastPackPath.value = zipPath
+  }
+
+  window.onExportProgress = (_done: number, _total: number, msg: string) => {
+    exportHint.value = msg || ''
+  }
+
+  window.onExportFinished = (success: boolean, path: string, count: number, error: string) => {
+    finishExportFromEvent(success, path, count, error)
+  }
+
+  window.onImportProgress = (done: number, total: number, msg: string) => {
+    importDone.value = done
+    if (total > 0) importTotal.value = total
+    importHint.value = msg || ''
+  }
+
+  window.onImportFinished = (
+    success: boolean,
+    stickers: ImportedSticker[],
+    missing: string[],
+    error: string,
+  ) => {
+    void finishImportFromEvent(success, stickers, missing, error)
   }
 
   window.onAiItemStarted = (_taskId: number, fileName: string) => {
@@ -286,8 +503,13 @@ function setupIpcListeners() {
 }
 
 async function bootApi() {
+  if (bootStarted) return
+  bootStarted = true
   const api = window.pywebview?.api
-  if (!api) return
+  if (!api) {
+    bootStarted = false
+    return
+  }
   try {
     const info = await api.get_info()
     if (info.stream_base_url) {
@@ -300,36 +522,235 @@ async function bootApi() {
       globalOptions.value.same_dir = settings.same_dir ?? false
       globalOptions.value.pack_output = settings.pack_output ?? true
       globalOptions.value.custom_output_dir = settings.custom_output_dir || ''
+      dataDir.value = settings.data_dir || ''
+      dataDirResolved.value = settings.data_dir_resolved || ''
+    }
+    if (api.get_proxy_cache_info) {
+      try {
+        const info = await api.get_proxy_cache_info()
+        proxyCacheHint.value = formatProxyCacheHint(info)
+      } catch {
+        proxyCacheHint.value = ''
+      }
     }
     appendLog('🚀 Telegram Sticker Maker 已准备就绪')
+    await restoreSession()
   } catch (e) {
     console.error('Error initializing API:', e)
+    sessionReady = true
+  }
+}
+
+async function restoreSession() {
+  if (sessionReady || isRestoring.value) return
+  isRestoring.value = true
+  const api = window.pywebview?.api
+  if (!api?.load_session) {
+    isRestoring.value = false
+    sessionReady = true
+    return
+  }
+  try {
+    const res = await api.load_session()
+    const stickers = res.stickers || []
+    const missing = res.missing || []
+    if (res.status === 'ok' && stickers.length > 0) {
+      importCanceled = false
+      importHint.value = '正在读取上次进度...'
+      importDone.value = 0
+      importTotal.value = stickers.length
+      tasks.value = []
+      nextTaskId = 1
+      const before = tasks.value.length
+      await addImportedStickers(stickers)
+      const added = tasks.value.length - before
+      if (importCanceled) {
+        appendLog(added > 0 ? `已停止恢复，已加入 ${added} 项` : '已停止恢复')
+      } else {
+        appendLog(`📂 已恢复上次进度：${added} 项`)
+      }
+      if (missing.length > 0) {
+        appendLog(`⚠️ 有 ${missing.length} 个源文件找不到，已跳过（可能被移动或删除）`)
+      }
+    } else if (missing.length > 0) {
+      appendLog(`⚠️ 上次进度中的 ${missing.length} 个源文件找不到，已跳过`)
+    }
+  } catch (e) {
+    appendLog(`⚠️ 恢复上次进度失败: ${e}`)
+  } finally {
+    isRestoring.value = false
+    importHint.value = ''
+    importDone.value = 0
+    importTotal.value = 0
+    sessionReady = true
+    lastSessionJson = ''
+    persistSession(true)
   }
 }
 
 function initPywebview() {
-  if (window.pywebview?.api) {
+  const tryBoot = () => {
+    if (!window.pywebview?.api) return false
     void bootApi()
-    return
+    return true
   }
+  if (tryBoot()) return
   window.addEventListener('pywebviewready', () => {
-    void bootApi()
+    tryBoot()
   }, { once: true })
   const poll = window.setInterval(() => {
-    if (window.pywebview?.api) {
-      window.clearInterval(poll)
-      void bootApi()
-    }
+    if (tryBoot()) window.clearInterval(poll)
   }, 100)
   window.setTimeout(() => window.clearInterval(poll), 15000)
+}
+
+function isImportFilePath(path: string): boolean {
+  const lower = path.toLowerCase()
+  return lower.endsWith('.zip') || lower.endsWith('.json')
+}
+
+async function addImportedStickers(stickers: ImportedSticker[]) {
+  const api = window.pywebview?.api
+  if (!api?.analyze_file) return
+  const total = stickers.length
+  importTotal.value = total
+  for (let i = 0; i < stickers.length; i++) {
+    if (importCanceled) break
+    const item = stickers[i]
+    const name = item.file_name || item.input_path.split(/[/\\]/).pop() || '文件'
+    importDone.value = i
+    importHint.value = `正在解析 ${name}`
+    try {
+      const info = await api.analyze_file(item.input_path)
+      if (!info || info.error) {
+        appendLog(`❌ 导入解析失败: ${name} (${info?.error || '未知错误'})`)
+        importDone.value = i + 1
+        continue
+      }
+      const task: TaskItem = {
+        taskId: nextTaskId++,
+        inputPath: item.input_path,
+        outputPath: '',
+        mediaInfo: info,
+        emoji: item.emoji || '',
+        keywords: item.keywords || '',
+        index: tasks.value.length + 1,
+        status: 'waiting',
+        progress: 0,
+        statusMsg: '等待转换',
+        outputSize: 0,
+        startTime: item.start_time != null ? item.start_time : info.is_video ? 0 : undefined,
+        endTime: item.end_time != null ? item.end_time : info.is_video ? defaultClipEnd(info.duration) : undefined,
+        crop: item.crop,
+        cropRadius: item.crop_radius,
+        mirror: !!item.mirror,
+        clipGroupId: item.clip_group_id,
+        clipId: item.clip_id,
+        clipLabel: item.clip_label,
+      }
+      updateTaskOutputPath(task)
+      tasks.value.push(task)
+    } catch {
+      appendLog(`❌ 导入解析异常: ${name}`)
+    }
+    importDone.value = i + 1
+  }
+}
+
+function resetImportState() {
+  isImporting.value = false
+  importHint.value = ''
+  importDone.value = 0
+  importTotal.value = 0
+}
+
+async function applyImportPayload(stickers: ImportedSticker[], missing: string[] = []) {
+  const before = tasks.value.length
+  await addImportedStickers(stickers)
+  const added = tasks.value.length - before
+  if (importCanceled) {
+    appendLog(added > 0 ? `已取消导入，已加入 ${added} 项` : '已取消导入')
+    return
+  }
+  appendLog(`📥 已导入 ${added} 项`)
+  if (missing.length > 0) {
+    appendLog(`⚠️ 有 ${missing.length} 个源文件缺失，已跳过`)
+  }
+}
+
+async function finishImportFromEvent(
+  success: boolean,
+  stickers: ImportedSticker[],
+  missing: string[],
+  error: string,
+) {
+  try {
+    if (success && stickers && stickers.length > 0) {
+      await applyImportPayload(stickers, missing || [])
+      return
+    }
+    if (error === '已取消导入') {
+      appendLog('已取消导入')
+      return
+    }
+    if (error) appendLog(`❌ 导入失败: ${error}`)
+  } finally {
+    resetImportState()
+  }
+}
+
+async function importFromPath(sourcePath = '') {
+  const api = window.pywebview?.api
+  if (!api?.import_sticker_list) {
+    appendLog('❌ 当前环境不支持导入列表')
+    return
+  }
+  importCanceled = false
+  isImporting.value = true
+  importHint.value = '准备导入...'
+  importDone.value = 0
+  importTotal.value = 0
+  try {
+    const res = await api.import_sticker_list(sourcePath)
+    if (res.status === 'started') return
+    try {
+      if (res.status === 'ok' && res.stickers && res.stickers.length > 0) {
+        await applyImportPayload(res.stickers, res.missing || [])
+      } else if (res.status === 'empty' && res.error === '已取消导入') {
+        appendLog('已取消导入')
+      } else if (res.error) {
+        appendLog(`❌ 导入失败: ${res.error}`)
+      }
+    } finally {
+      resetImportState()
+    }
+  } catch (e) {
+    resetImportState()
+    appendLog(`❌ 导入失败: ${e}`)
+  }
+}
+
+async function handleImport() {
+  if (isBusy.value) return
+  await importFromPath('')
 }
 
 // --- Add Files ---
 async function addFilesFromPaths(paths: string[]) {
   if (!paths || paths.length === 0) return
-  appendLog(`正在解析 ${paths.length} 个文件...`)
-
+  const imports: string[] = []
+  const media: string[] = []
   for (const p of paths) {
+    if (isImportFilePath(p)) imports.push(p)
+    else media.push(p)
+  }
+  for (const p of imports) {
+    await importFromPath(p)
+  }
+  if (media.length === 0) return
+  appendLog(`正在解析 ${media.length} 个文件...`)
+
+  for (const p of media) {
     try {
       const info = await window.pywebview?.api?.analyze_file(p)
       if (!info || info.error) {
@@ -374,6 +795,17 @@ async function handleSelectDirectory() {
   if (window.pywebview?.api?.select_directory) {
     const dir = await window.pywebview.api.select_directory()
     if (dir) {
+      if (window.pywebview.api.detect_import_source) {
+        try {
+          const peek = await window.pywebview.api.detect_import_source(dir)
+          if (peek.found) {
+            await importFromPath(dir)
+            return
+          }
+        } catch {
+          // fall through to media scan
+        }
+      }
       appendLog(`扫描文件夹: ${dir}`)
       const files = await window.pywebview.api.scan_directory(dir)
       if (files && files.length > 0) {
@@ -585,8 +1017,8 @@ function removeTask(taskId: number) {
 }
 
 function clearAllTasks() {
-  if (isConverting.value) {
-    alert('转换正在进行中，请先停止！')
+  if (isBusy.value) {
+    alert('任务正在进行中，请先停止！')
     return
   }
   tasks.value = []
@@ -599,6 +1031,89 @@ function openTaskClipModal(task: TaskItem) {
   activeClipTask.value = task
 }
 
+
+function clipGroupTasks(task: TaskItem): TaskItem[] {
+  if (task.clipGroupId) {
+    return tasks.value.filter((t) => t.clipGroupId === task.clipGroupId)
+  }
+  return [task]
+}
+
+function taskToClipItem(task: TaskItem): ClipItem {
+  const start = task.startTime ?? 0
+  const end =
+    task.endTime ?? (task.mediaInfo.is_video ? defaultClipEnd(task.mediaInfo.duration) : 0)
+  return {
+    id: task.clipId || `clip-${task.taskId}`,
+    startTime: start,
+    endTime: end,
+    duration: Math.max(0.1, end - start),
+    emoji: task.emoji || '',
+    keywords: task.keywords,
+    crop: task.crop,
+    cropRadius: task.cropRadius,
+    mirror: !!task.mirror,
+  }
+}
+
+const clipModalSiblings = computed(() =>
+  activeClipTask.value ? clipGroupTasks(activeClipTask.value) : [],
+)
+const clipModalClips = computed(() => clipModalSiblings.value.map(taskToClipItem))
+const clipModalFocusIdx = computed(() => {
+  const current = activeClipTask.value
+  if (!current) return 0
+  const idx = clipModalSiblings.value.findIndex((t) => t.taskId === current.taskId)
+  return idx >= 0 ? idx : 0
+})
+
+function applyClipToTask(task: TaskItem, clip: ClipItem, groupId: string) {
+  if (task.mediaInfo.is_video) {
+    task.startTime = clip.startTime
+    task.endTime = clip.endTime ?? undefined
+    task.clipLabel =
+      clip.endTime != null
+        ? `[${clip.startTime.toFixed(3)}s - ${clip.endTime.toFixed(3)}s]`
+        : `[${clip.startTime.toFixed(3)}s - ]`
+  }
+  task.crop = clip.crop
+  task.cropRadius = clip.cropRadius
+  task.mirror = !!clip.mirror
+  task.emoji = clip.emoji || task.emoji
+  if (clip.keywords != null) task.keywords = clip.keywords
+  task.clipGroupId = groupId
+  task.clipId = clip.id
+  updateTaskOutputPath(task)
+}
+
+function createTaskFromClip(base: TaskItem, clip: ClipItem, groupId: string): TaskItem {
+  const task: TaskItem = {
+    taskId: nextTaskId++,
+    inputPath: base.inputPath,
+    outputPath: '',
+    mediaInfo: base.mediaInfo,
+    emoji: clip.emoji || base.emoji,
+    keywords: clip.keywords ?? base.keywords ?? '',
+    index: 0,
+    clipLabel: base.mediaInfo.is_video && clip.endTime != null
+      ? `[${clip.startTime.toFixed(3)}s - ${clip.endTime.toFixed(3)}s]`
+      : undefined,
+    startTime: base.mediaInfo.is_video ? clip.startTime : undefined,
+    endTime: base.mediaInfo.is_video ? clip.endTime ?? undefined : undefined,
+    crop: clip.crop,
+    cropRadius: clip.cropRadius,
+    mirror: !!clip.mirror,
+    clipGroupId: groupId,
+    clipId: clip.id,
+    status: 'waiting',
+    progress: 0,
+    statusMsg: '等待转换',
+    outputSize: 0,
+  }
+  updateTaskOutputPath(task)
+  return task
+}
+
 function handleClipsGenerated(clips: ClipItem[]) {
   if (!activeClipTask.value || clips.length === 0) {
     activeClipTask.value = null
@@ -606,54 +1121,53 @@ function handleClipsGenerated(clips: ClipItem[]) {
   }
 
   const baseTask = activeClipTask.value
-  if (clips.length === 1) {
-    const c = clips[0]
-    if (baseTask.mediaInfo.is_video) {
-      baseTask.startTime = c.startTime
-      baseTask.endTime = c.endTime
-      baseTask.clipLabel = `[${c.startTime.toFixed(3)}s - ${c.endTime.toFixed(3)}s]`
-    }
-    baseTask.crop = c.crop
-    baseTask.cropRadius = c.cropRadius
-    baseTask.emoji = c.emoji || baseTask.emoji
-    if (c.keywords != null) baseTask.keywords = c.keywords
-    updateTaskOutputPath(baseTask)
-    appendLog(`[${baseTask.mediaInfo.file_name}] 已更新截取与裁切参数`)
-  } else {
-    const baseIdx = tasks.value.findIndex((t) => t.taskId === baseTask.taskId)
-    const newTasks: TaskItem[] = []
+  const openedClipId = baseTask.clipId || `clip-${baseTask.taskId}`
+  const groupId = baseTask.clipGroupId || `clipgrp-${baseTask.taskId}`
+  const existingGroup = clipGroupTasks(baseTask)
+  let insertAt = tasks.value.findIndex((t) => t.taskId === existingGroup[0]?.taskId)
+  if (insertAt < 0) insertAt = tasks.value.length
 
-    clips.forEach((c, i) => {
-      const task: TaskItem = {
-        taskId: nextTaskId++,
-        inputPath: baseTask.inputPath,
-        outputPath: '',
-        mediaInfo: baseTask.mediaInfo,
-        emoji: c.emoji || baseTask.emoji,
-        keywords: c.keywords ?? baseTask.keywords ?? '',
-        index: baseTask.index + i,
-        clipLabel: `[${c.startTime.toFixed(3)}s - ${c.endTime.toFixed(3)}s]`,
-        startTime: c.startTime,
-        endTime: c.endTime,
-        crop: c.crop,
-        cropRadius: c.cropRadius,
-        status: 'waiting',
-        progress: 0,
-        statusMsg: '等待转换',
-        outputSize: 0,
-      }
-      updateTaskOutputPath(task)
-      newTasks.push(task)
-    })
-
-    tasks.value.splice(baseIdx, 1, ...newTasks)
-    tasks.value.forEach((t, i) => {
-      t.index = i + 1
-      updateTaskOutputPath(t)
-    })
-    appendLog(`[${baseTask.mediaInfo.file_name}] 已生成 ${clips.length} 个截取片段`)
+  const unused = [...existingGroup]
+  const byClipId = new Map<string, TaskItem>()
+  for (const t of existingGroup) {
+    if (t.clipId) byClipId.set(t.clipId, t)
   }
 
+  const takeExisting = (clip: ClipItem): TaskItem | undefined => {
+    if (clip.id && byClipId.has(clip.id)) {
+      const found = byClipId.get(clip.id)!
+      byClipId.delete(clip.id)
+      const i = unused.indexOf(found)
+      if (i >= 0) unused.splice(i, 1)
+      return found
+    }
+    return unused.shift()
+  }
+
+  const rebuilt = clips.map((c) => {
+    const prev = takeExisting(c)
+    if (prev) {
+      applyClipToTask(prev, c, groupId)
+      return prev
+    }
+    return createTaskFromClip(baseTask, c, groupId)
+  })
+
+  const removeIds = new Set(existingGroup.map((t) => t.taskId))
+  const next = tasks.value.filter((t) => !removeIds.has(t.taskId))
+  next.splice(insertAt, 0, ...rebuilt)
+  next.forEach((t, i) => {
+    t.index = i + 1
+    updateTaskOutputPath(t)
+  })
+  tasks.value = next
+  selectedTaskIds.value = new Set(rebuilt.map((t) => t.taskId))
+  lastSelectedTaskId.value =
+    rebuilt.find((t) => t.clipId === openedClipId)?.taskId ?? rebuilt[0].taskId
+
+  appendLog(
+    `[${baseTask.mediaInfo.file_name}] 已保存截取列表，共 ${rebuilt.length} 个贴纸`,
+  )
   activeClipTask.value = null
 }
 
@@ -668,7 +1182,26 @@ function getThumbnailUrl(task: TaskItem): string {
   if (task.cropRadius && task.cropRadius > 0.001) {
     url += `&radius=${task.cropRadius}`
   }
+  if (task.mirror) {
+    url += '&mirror=1'
+  }
   return url
+}
+
+function getTaskDuration(task: TaskItem): number {
+  if (task.startTime != null && task.endTime != null && task.endTime > task.startTime) {
+    return task.endTime - task.startTime
+  }
+  return task.mediaInfo?.duration || 0
+}
+
+function isTaskClipped(task: TaskItem): boolean {
+  if (!task.mediaInfo?.is_video) return false
+  const dur = task.mediaInfo.duration || 0
+  if (task.startTime != null && task.endTime != null) {
+    return task.startTime > 0.05 || (dur > 0 && task.endTime < dur - 0.05)
+  }
+  return !!task.clipLabel
 }
 
 function openFolder(filePath: string) {
@@ -698,6 +1231,78 @@ function handleOpenOutputFolder() {
   if (target && window.pywebview?.api?.open_folder) {
     window.pywebview.api.open_folder(target)
   }
+}
+
+function formatProxyCacheHint(info: { count: number; bytes: number }) {
+  if (!info || !info.count) return '缓存为空'
+  const mb = info.bytes / (1024 * 1024)
+  const size = mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(info.bytes / 1024))} KB`
+  return `${info.count} 个文件 · ${size}`
+}
+
+async function refreshProxyCacheHint() {
+  const api = window.pywebview?.api
+  if (!api?.get_proxy_cache_info) return
+  try {
+    proxyCacheHint.value = formatProxyCacheHint(await api.get_proxy_cache_info())
+  } catch {
+    proxyCacheHint.value = ''
+  }
+}
+
+async function clearProxyCache() {
+  const api = window.pywebview?.api
+  if (!api?.clear_proxy_cache) return
+  try {
+    await api.clear_proxy_cache()
+    await refreshProxyCacheHint()
+    appendLog('已清除预览代理缓存')
+  } catch (e) {
+    console.error('Failed to clear proxy cache:', e)
+  }
+}
+
+async function refreshDataDirFromSettings() {
+  const api = window.pywebview?.api
+  if (!api?.get_settings) return
+  try {
+    const settings = await api.get_settings()
+    dataDir.value = settings.data_dir || ''
+    dataDirResolved.value = settings.data_dir_resolved || ''
+  } catch {
+    /* keep current */
+  }
+}
+
+async function saveDataDir() {
+  const api = window.pywebview?.api
+  if (!api?.save_settings) return
+  try {
+    await api.save_settings({ data_dir: dataDir.value.trim() })
+    await refreshDataDirFromSettings()
+    lastSessionJson = ''
+    persistSession(true)
+    await refreshProxyCacheHint()
+    if (dataDirResolved.value) {
+      appendLog(`数据目录: ${dataDirResolved.value}`)
+    }
+  } catch (e) {
+    console.error('Failed to save data dir:', e)
+  }
+}
+
+async function selectDataDir() {
+  if (window.pywebview?.api?.select_directory) {
+    const dir = await window.pywebview.api.select_directory()
+    if (dir) {
+      dataDir.value = dir
+      await saveDataDir()
+    }
+  }
+}
+
+function openDataDir() {
+  openFolder(dataDirResolved.value || dataDir.value)
 }
 
 async function saveCurrentSettings() {
@@ -760,18 +1365,17 @@ async function aiTagSingle(task: TaskItem) {
 }
 
 // --- Conversion Controls ---
-async function startConversion() {
-  if (tasks.value.length === 0) return
-  if (!globalOptions.value.pack_output) {
-    const ok = window.confirm(
-      '未勾选「输出为压缩包」。贴纸 keywords 只会写入压缩包内的 stickers.json，散文件导出不会包含该映射。是否继续转换？'
-    )
-    if (!ok) return
-  }
+async function startConversion(onlySelected = false) {
+  const targets =
+    onlySelected === true && selectedTaskIds.value.size > 0
+      ? tasks.value.filter((t) => selectedTaskIds.value.has(t.taskId))
+      : tasks.value
+  if (targets.length === 0 || isBusy.value) return
   updateAllTasksOutputPaths()
   isConverting.value = true
+  conversionIds.value = targets.map((t) => t.taskId)
 
-  const payload = tasks.value.map((t) => ({
+  const payload = targets.map((t) => ({
     task_id: t.taskId,
     input_path: t.inputPath,
     output_path: t.outputPath,
@@ -781,6 +1385,7 @@ async function startConversion() {
     end_time: t.endTime,
     crop: t.crop,
     crop_radius: t.cropRadius || 0,
+    mirror: !!t.mirror,
   }))
 
   try {
@@ -796,17 +1401,132 @@ async function startConversion() {
   } catch (e) {
     appendLog(`❌ 启动转换失败: ${e}`)
     isConverting.value = false
+    conversionIds.value = null
   }
 }
 
+function convertSelectedFromMenu() {
+  contextMenu.value.visible = false
+  void startConversion(true)
+}
+
 async function cancelConversion() {
+  importCanceled = true
   if (window.pywebview?.api?.cancel_conversion) {
     await window.pywebview.api.cancel_conversion()
   }
 }
 
+function markTasksWaitingExport() {
+  for (const t of tasks.value) {
+    t.status = 'waiting'
+    t.progress = 0
+    t.statusMsg = '等待导出...'
+  }
+}
+
+function markRemainingExportCanceled() {
+  for (const t of tasks.value) {
+    if (t.status === 'waiting' || t.status === 'converting') {
+      t.status = 'failed'
+      t.statusMsg = '已取消'
+    }
+  }
+}
+
+function finishExportFromEvent(success: boolean, path: string, count: number, error: string) {
+  isExporting.value = false
+  exportHint.value = ''
+  if (success && path) {
+    lastPackPath.value = path
+    appendLog(`🎉 导出完成：${count} 项 -> ${path}`)
+    return
+  }
+  if (error === '已取消导出') {
+    markRemainingExportCanceled()
+    appendLog('已取消导出')
+    return
+  }
+  if (error) {
+    appendLog(`❌ 导出失败: ${error}`)
+  }
+}
+
+async function exportStickerList(mode: 'list' | 'sources') {
+  showExportMenu.value = false
+  if (tasks.value.length === 0 || isBusy.value) return
+  const payload = tasks.value.map((t) => ({
+    task_id: t.taskId,
+    input_path: t.inputPath,
+    file_name: t.mediaInfo.file_name,
+    is_video: t.mediaInfo.is_video,
+    emoji: t.emoji || '',
+    keywords: t.keywords || '',
+    start_time: t.startTime,
+    end_time: t.endTime,
+    crop: t.crop,
+    crop_radius: t.cropRadius || 0,
+    mirror: !!t.mirror,
+    clip_group_id: t.clipGroupId,
+    clip_id: t.clipId,
+    clip_label: t.clipLabel,
+    index: t.index,
+    duration: t.mediaInfo.duration,
+  }))
+  isExporting.value = true
+  exportHint.value = '准备导出...'
+  try {
+    if (!window.pywebview?.api?.export_sticker_list) {
+      isExporting.value = false
+      exportHint.value = ''
+      appendLog('❌ 当前环境不支持导出列表')
+      return
+    }
+    const res = await window.pywebview.api.export_sticker_list(
+      payload,
+      '',
+      globalOptions.value.custom_output_dir || '',
+      mode,
+      {
+        pack_output: globalOptions.value.pack_output,
+        same_dir: globalOptions.value.same_dir,
+        custom_output_dir: globalOptions.value.custom_output_dir,
+      },
+    )
+    if (res.status === 'started') {
+      markTasksWaitingExport()
+      return
+    }
+    isExporting.value = false
+    exportHint.value = ''
+    if (res.status === 'ok' && res.path) {
+      lastPackPath.value = res.path
+      if (mode === 'sources') {
+        const copied = res.copied ?? 0
+        appendLog(`📤 已导出源文件+JSON：${res.count} 项，复制 ${copied} 个文件 -> ${res.path}`)
+        if (res.missing && res.missing.length > 0) {
+          appendLog(`⚠️ 有 ${res.missing.length} 个源文件缺失，已跳过`)
+        }
+      } else {
+        appendLog(`📤 已导出转换前文件 ${res.count} 项 -> ${res.path}`)
+        if (res.missing && res.missing.length > 0) {
+          appendLog(`⚠️ 有 ${res.missing.length} 个源文件缺失，已跳过`)
+        }
+      }
+    } else if (res.status === 'empty' && res.error === '已取消导出') {
+      appendLog('已取消导出')
+    } else if (res.error) {
+      appendLog(`❌ 导出失败: ${res.error}`)
+    }
+  } catch (e) {
+    isExporting.value = false
+    exportHint.value = ''
+    appendLog(`❌ 导出失败: ${e}`)
+  }
+}
+
 async function triggerAiTagAll() {
-  if (tasks.value.length === 0) return
+  if (tasks.value.length === 0 || isBusy.value) return
   const targets = selectedTaskIds.value.size > 0
     ? tasks.value.filter((t) => selectedTaskIds.value.has(t.taskId))
     : tasks.value
@@ -855,12 +1575,13 @@ async function triggerAiTagAll() {
       <div
         :class="[
           'rounded-md px-2.5 py-1 text-xs font-semibold border transition-all duration-200',
-          tasks.length === 0
+          tasks.length === 0 && !isBusy
             ? 'bg-[#1e222b] text-[#9ca3af] border-[#2d323e]'
             : 'bg-[#24a1de]/15 text-[#2eb5f7] border-[#24a1de]'
         ]"
       >
-        <span v-if="selectedTaskIds.size > 0">已选 {{ selectedTaskIds.size }} / {{ tasks.length }} 项</span>
+        <span v-if="isBusy">{{ jobLabel }} {{ jobDone }} / {{ jobTotal }}</span>
+        <span v-else-if="selectedTaskIds.size > 0">已选 {{ selectedTaskIds.size }} / {{ tasks.length }} 项</span>
         <span v-else>已添加 {{ tasks.length }} 项</span>
       </div>
     </header>
@@ -896,8 +1617,17 @@ async function triggerAiTagAll() {
           </button>
 
           <button
+            @click="handleImport"
+            :disabled="isBusy"
+            class="px-3 py-1.5 rounded-lg bg-[#242730] hover:bg-[#2e333e] border border-[#333844] text-[#e5e7eb] text-xs font-medium flex items-center gap-1.5 transition active:scale-95 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            title="导入导出的 zip、JSON 或文件夹，还原裁切、片段与关键词"
+          >
+            {{ isImporting ? '导入中...' : '📥 导入' }}
+          </button>
+
+          <button
             @click="triggerAiTagAll"
-            :disabled="isAiTagging || isConverting || tasks.length === 0"
+            :disabled="isAiTagging || isBusy || tasks.length === 0"
             class="px-3 py-1.5 rounded-lg bg-[#10b981]/15 hover:bg-[#10b981]/25 border border-[#10b981]/40 text-[#10b981] text-xs font-semibold flex items-center gap-1.5 transition active:scale-95 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             :title="selectedTaskIds.size > 0 ? '使用视觉模型识别所选贴纸画面并推荐 Emoji' : '使用视觉模型识别全部贴纸画面并推荐 Emoji'"
           >
@@ -914,7 +1644,7 @@ async function triggerAiTagAll() {
 
           <button
             @click="clearAllTasks"
-            :disabled="isConverting || tasks.length === 0"
+            :disabled="isBusy || tasks.length === 0"
             class="px-3 py-1.5 rounded-lg bg-[#242730] hover:bg-red-500/20 hover:text-red-400 border border-[#333844] text-[#e5e7eb] text-xs font-medium flex items-center gap-1.5 transition active:scale-95 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ml-auto"
           >
             🗑️ 清空列表
@@ -940,9 +1670,22 @@ async function triggerAiTagAll() {
             v-if="tasks.length === 0"
             class="flex-1 border-2 border-dashed border-[#282b35] hover:border-[#24a1de]/60 rounded-xl flex flex-col items-center justify-center p-8 gap-3 bg-[#16181d]/40 hover:bg-[#24a1de]/5 transition group"
           >
+            <template v-if="isImporting || isRestoring">
+              <span class="inline-block w-8 h-8 border-2 border-[#24a1de]/30 border-t-[#24a1de] rounded-full animate-spin motion-reduce:animate-none"></span>
+              <h3 class="text-base font-bold text-white">{{ isRestoring ? '正在恢复上次进度' : '正在导入贴纸列表' }}</h3>
+              <p class="text-xs text-[#9ca3af] max-w-sm text-center truncate">{{ importHint || (isRestoring ? '正在读取上次进度...' : '准备导入...') }}</p>
+              <div class="w-56 h-1.5 bg-[#20232b] rounded-full overflow-hidden">
+                <div
+                  class="h-full bg-[#24a1de] transition-all duration-150"
+                  :style="{ width: `${overallProgress}%` }"
+                ></div>
+              </div>
+              <p class="font-mono text-[11px] text-gray-500">{{ importDone }} / {{ importTotal }}</p>
+            </template>
+            <template v-else>
             <div class="text-5xl leading-none select-none">📥</div>
             <h3 class="text-base font-bold text-white">拖拽图片或视频到这里</h3>
-            <p class="text-xs text-[#9ca3af]">支持多文件与文件夹拖拽，自动适配 Telegram 规范</p>
+            <p class="text-xs text-[#9ca3af]">支持多文件与文件夹拖拽，也可导入已导出的 zip / JSON</p>
 
             <div class="flex items-center gap-3 mt-2">
               <button
@@ -957,6 +1700,12 @@ async function triggerAiTagAll() {
               >
                 📁 添加文件夹
               </button>
+              <button
+                @click="handleImport"
+                class="px-4 py-2 rounded-lg bg-[#252831] hover:bg-[#2e333e] active:bg-[#1c1e25] border border-[#363b47] text-[#e5e7eb] text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+              >
+                📥 导入
+              </button>
             </div>
 
             <!-- Format Capsules -->
@@ -969,6 +1718,7 @@ async function triggerAiTagAll() {
                 {{ fmt }}
               </span>
             </div>
+            </template>
           </div>
 
           <!-- Task Table (Faithful to QTableWidget in Python) -->
@@ -979,7 +1729,7 @@ async function triggerAiTagAll() {
                   <tr>
                     <th class="py-2.5 px-3 w-14 text-center">预览</th>
                     <th class="py-2.5 px-3">原文件名</th>
-                    <th class="py-2.5 px-3 w-48 text-center">原规格</th>
+                    <th class="py-2.5 px-3 w-48 text-center">规格</th>
                     <th class="py-2.5 px-3 w-56">目标文件名</th>
                     <th class="py-2.5 px-3 w-36">关键词</th>
                     <th class="py-2.5 px-3 w-44">进度与状态</th>
@@ -1019,7 +1769,7 @@ async function triggerAiTagAll() {
                           v-if="task.mediaInfo.is_video"
                           class="absolute bottom-0.5 right-0.5 bg-black/80 rounded px-0.5 text-[8px] font-mono text-gray-300 leading-tight"
                         >
-                          {{ (task.endTime && task.startTime !== undefined ? (task.endTime - task.startTime) : task.mediaInfo.duration).toFixed(1) }}s
+                          {{ getTaskDuration(task).toFixed(1) }}s
                         </span>
                       </div>
                     </td>
@@ -1031,10 +1781,13 @@ async function triggerAiTagAll() {
                           {{ task.mediaInfo.file_name }}
                         </div>
                         <div
-                          v-if="task.clipLabel || task.crop || (task.cropRadius && task.cropRadius > 0.001)"
+                          v-if="task.clipLabel || task.crop || (task.cropRadius && task.cropRadius > 0.001) || task.mirror"
                           class="flex items-center gap-1.5 text-[11px] font-mono text-[#2eb5f7]"
                         >
                           <span v-if="task.clipLabel">{{ task.clipLabel }}</span>
+                          <span v-if="task.mirror" class="text-amber-400 font-sans text-[10px] bg-amber-950/60 px-1 rounded border border-amber-800/40">
+                            🪞 镜像
+                          </span>
                           <span v-if="task.crop" class="text-emerald-400 font-sans text-[10px]">
                             [✂️ {{ cropRadiusLabel(task.cropRadius) }} {{ task.crop[2] }}×{{ task.crop[3] }}]
                           </span>
@@ -1048,10 +1801,13 @@ async function triggerAiTagAll() {
                       </div>
                     </td>
 
-                    <!-- 3. 原规格 -->
+                    <!-- 3. 规格 -->
                     <td class="py-2 px-3 text-center font-mono text-[11px] text-gray-300">
-                      <div v-if="task.mediaInfo.is_video">
-                        {{ task.mediaInfo.width }}×{{ task.mediaInfo.height }} | {{ (task.mediaInfo.duration || 0).toFixed(1) }}s | {{ Math.round(task.mediaInfo.fps || 30) }}fps
+                      <div
+                        v-if="task.mediaInfo.is_video"
+                        :title="isTaskClipped(task) ? `有效时长: ${getTaskDuration(task).toFixed(2)}s (原片: ${(task.mediaInfo.duration || 0).toFixed(2)}s)` : undefined"
+                      >
+                        {{ task.mediaInfo.width }}×{{ task.mediaInfo.height }} | {{ getTaskDuration(task).toFixed(1) }}s | {{ Math.round(task.mediaInfo.fps || 30) }}fps
                         <span v-if="task.mediaInfo.has_alpha" class="text-emerald-400 font-sans ml-1">🟢Alpha</span>
                       </div>
                       <div v-else>
@@ -1088,7 +1844,7 @@ async function triggerAiTagAll() {
                     <td class="py-2 px-3">
                       <button
                         type="button"
-                        :disabled="isConverting"
+                        :disabled="isBusy"
                         class="w-full flex items-center justify-between gap-1.5 bg-[#171a21] border border-[#2d323e] hover:border-[#24a1de] px-2 py-1 rounded-md text-xs text-left cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                         :title="task.keywords || '设置关键词（写入压缩包 stickers.json）'"
                         @click.stop="openKeywordsModal(task)"
@@ -1231,7 +1987,7 @@ async function triggerAiTagAll() {
             </h4>
             <select
               v-model="globalOptions.preset_style"
-              :disabled="isConverting"
+              :disabled="isBusy"
               @change="saveCurrentSettings"
               class="w-full bg-[#15171c] border border-[#282b35] hover:border-[#333844] rounded-lg px-3 py-2 text-xs text-gray-200 focus:outline-none focus:border-[#24a1de] cursor-pointer"
             >
@@ -1250,7 +2006,7 @@ async function triggerAiTagAll() {
               <input
                 v-model="globalOptions.same_dir"
                 type="checkbox"
-                :disabled="isConverting"
+                :disabled="isBusy"
                 @change="saveCurrentSettings"
                 class="rounded bg-[#15171c] border-[#333844] text-[#24a1de] focus:ring-0 w-3.5 h-3.5 cursor-pointer"
               />
@@ -1273,23 +2029,103 @@ async function triggerAiTagAll() {
               </button>
             </div>
           </div>
+
+          <div class="space-y-1.5">
+            <h4 class="text-xs font-bold text-white flex items-center gap-1.5">
+              💾 数据目录
+            </h4>
+            <p class="text-[10px] text-gray-500 leading-snug">
+              实际写入所选路径下的 <span class="font-mono">telegram_sticker_maker</span> 文件夹。留空则用配置目录。
+            </p>
+            <div class="flex items-center gap-2">
+              <input
+                v-model="dataDir"
+                type="text"
+                :disabled="isBusy"
+                placeholder="选择父文件夹..."
+                @change="saveDataDir"
+                class="flex-1 bg-[#15171c] border border-[#282b35] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-[#24a1de]"
+              />
+              <button
+                :disabled="isBusy"
+                @click="selectDataDir"
+                class="px-2.5 py-1.5 bg-[#242730] hover:bg-[#2e333e] border border-[#333844] rounded-lg text-gray-200 text-xs font-medium cursor-pointer disabled:opacity-40"
+              >
+                浏览...
+              </button>
+            </div>
+            <p
+              v-if="dataDirResolved"
+              class="text-[10px] text-gray-500 font-mono truncate"
+              :title="dataDirResolved"
+            >
+              {{ dataDirResolved }}
+            </p>
+            <div class="flex items-center gap-2">
+              <button
+                @click="openDataDir"
+                class="px-2.5 py-1.5 bg-[#242730] hover:bg-[#2e333e] border border-[#333844] rounded-lg text-gray-200 text-xs font-medium cursor-pointer"
+              >
+                打开文件夹
+              </button>
+              <button
+                @click="clearProxyCache"
+                class="px-2.5 py-1.5 bg-[#242730] hover:bg-[#2e333e] border border-[#333844] rounded-lg text-gray-200 text-xs font-medium cursor-pointer"
+              >
+                清除预览缓存
+              </button>
+              <span v-if="proxyCacheHint" class="text-[10px] text-gray-500 truncate">{{ proxyCacheHint }}</span>
+            </div>
+          </div>
         </div>
 
         <!-- Right Bottom Action Buttons (Faithful to PySide6 MainWindow) -->
-        <div class="space-y-2 pt-2 border-t border-[#252831] shrink-0">
+        <div class="relative z-40 space-y-2 pt-2 border-t border-[#252831] shrink-0">
+          <div
+            v-if="isBusy"
+            class="rounded-lg border border-[#333844] bg-[#15171c] px-3 py-2 space-y-1.5"
+          >
+            <div class="flex items-center justify-between gap-2 text-[11px]">
+              <span class="flex items-center gap-1.5 text-[#2eb5f7] font-medium">
+                <span class="inline-block w-3 h-3 border-2 border-[#24a1de]/30 border-t-[#24a1de] rounded-full animate-spin motion-reduce:animate-none"></span>
+                {{ jobLabel }}
+              </span>
+              <span class="font-mono text-gray-400 shrink-0">
+                {{ jobDone }} / {{ jobTotal }} · {{ overallProgress }}%
+              </span>
+            </div>
+            <div class="w-full h-1.5 bg-[#20232b] rounded-full overflow-hidden">
+              <div
+                class="h-full bg-[#24a1de] transition-all duration-150"
+                :style="{ width: `${overallProgress}%` }"
+              ></div>
+            </div>
+            <p class="text-[10px] text-gray-500 truncate">{{ jobHint || statusSummaryText }}</p>
+          </div>
           <div class="flex items-center gap-2">
             <button
-              @click="startConversion"
-              :disabled="tasks.length === 0 || isConverting"
+              @click="startConversion()"
+              :disabled="tasks.length === 0 || isBusy"
               class="flex-1 py-2.5 rounded-lg bg-[#24a1de] hover:bg-[#2eb5f7] active:bg-[#1d89be] text-white text-xs font-bold flex items-center justify-center gap-2 shadow-lg shadow-[#24a1de]/20 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
-              🚀 开始转换
+              {{ isConverting ? '转换中...' : '🚀 开始转换' }}
             </button>
-            <label class="shrink-0 flex items-center gap-1.5 cursor-pointer select-none" title="压缩包内额外写入 stickers.json，对应每个贴纸的 emoji 与 keywords">
+            <div class="relative shrink-0">
+              <button
+                ref="exportBtnRef"
+                @click.stop="toggleExportMenu"
+                :disabled="tasks.length === 0 || isBusy"
+                class="px-3 py-2.5 rounded-lg bg-[#242730] hover:bg-[#2e333e] border border-[#333844] text-gray-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                title="导出贴纸列表，不进行转码"
+              >
+                {{ isExporting ? '导出中...' : '📤 导出' }}
+              </button>
+            </div>
+            <label class="shrink-0 flex items-center gap-1.5 cursor-pointer select-none" title="压缩包或输出文件夹内写入 stickers.json，对应每个贴纸的 emoji 与 keywords">
               <input
                 v-model="globalOptions.pack_output"
                 type="checkbox"
-                :disabled="isConverting"
+                :disabled="isBusy"
                 @change="saveCurrentSettings"
                 class="rounded bg-[#15171c] border-[#333844] text-[#24a1de] focus:ring-0 w-3.5 h-3.5 cursor-pointer"
               />
@@ -1297,12 +2133,12 @@ async function triggerAiTagAll() {
             </label>
           </div>
           <p class="text-[10px] text-gray-500 leading-snug">
-            keywords 仅随压缩包写入 <span class="font-mono text-gray-400">stickers.json</span>
+            keywords 写入压缩包或输出文件夹内的 <span class="font-mono text-gray-400">stickers.json</span>
           </p>
 
           <button
             @click="cancelConversion"
-            :disabled="!isConverting"
+            :disabled="!isBusy"
             class="w-full py-2 rounded-lg bg-[#ef4444] hover:bg-[#dc2626] active:bg-[#b91c1c] text-white text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
           >
             🛑 停止
@@ -1358,6 +2194,36 @@ async function triggerAiTagAll() {
       </div>
     </div>
 
+    <Teleport to="body">
+    <div
+      v-if="showExportMenu"
+      :style="{ top: `${exportMenuPos.top}px`, left: `${exportMenuPos.left}px` }"
+      class="fixed z-[100] w-64 rounded-lg border border-[#333844] bg-[#1b1e26] shadow-xl overflow-hidden"
+      @click.stop
+    >
+      <button
+        type="button"
+        class="w-full text-left px-3 py-2.5 hover:bg-[#252831] transition cursor-pointer"
+        @click="exportStickerList('sources')"
+      >
+        <div class="text-xs font-semibold text-white">源文件 + JSON</div>
+        <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">
+          {{ globalOptions.pack_output ? '打包原片与参数清单为压缩包' : '复制原片到文件夹，并附带参数清单' }}
+        </div>
+      </button>
+      <button
+        type="button"
+        class="w-full text-left px-3 py-2.5 hover:bg-[#252831] border-t border-[#2a2e38] transition cursor-pointer"
+        @click="exportStickerList('list')"
+      >
+        <div class="text-xs font-semibold text-white">贴纸列表文件</div>
+        <div class="text-[10px] text-gray-500 mt-0.5 leading-snug">
+          {{ globalOptions.pack_output ? '按转换结果打包已裁切源文件，不压成贴纸码率' : '按转换结果输出已裁切源文件到文件夹，不压成贴纸码率' }}
+        </div>
+      </button>
+    </div>
+    </Teleport>
+
     <!-- Custom Right-Click Context Menu -->
     <div
       v-if="contextMenu.visible && contextMenu.task"
@@ -1365,6 +2231,27 @@ async function triggerAiTagAll() {
       data-skip-deselect
       class="fixed z-50 bg-[#16181d] border border-[#282b35] rounded-xl shadow-2xl p-1 text-xs text-gray-200 min-w-[170px] space-y-0.5 select-none"
     >
+      <button
+        :disabled="isBusy"
+        @click="convertSelectedFromMenu()"
+        :class="[
+          'w-full text-left px-3 py-2 rounded-lg flex items-center gap-2 transition',
+          isBusy ? 'opacity-40 cursor-not-allowed' : 'hover:bg-[#24a1de] hover:text-white cursor-pointer'
+        ]"
+      >
+        🚀 转换选中贴纸{{ selectedTaskIds.size > 1 ? ` (${selectedTaskIds.size})` : '' }}
+      </button>
+      <button
+        :disabled="isBusy"
+        @click="openKeywordsForSelected(); contextMenu.visible = false"
+        :class="[
+          'w-full text-left px-3 py-2 rounded-lg flex items-center gap-2 transition',
+          isBusy ? 'opacity-40 cursor-not-allowed' : 'hover:bg-[#24a1de] hover:text-white cursor-pointer'
+        ]"
+      >
+        🏷️ 设置选中贴纸的关键词{{ selectedTaskIds.size > 1 ? ` (${selectedTaskIds.size})` : '' }}
+      </button>
+
       <template v-if="selectedTaskIds.size > 1">
         <button
           @click="triggerAiTagAll(); contextMenu.visible = false"
@@ -1408,24 +2295,10 @@ async function triggerAiTagAll() {
 
       <template v-else>
         <button
-          @click="openTaskClipModal(contextMenu.task!); contextMenu.visible = false"
-          class="w-full text-left px-3 py-2 rounded-lg hover:bg-[#24a1de] hover:text-white flex items-center gap-2 transition cursor-pointer"
-        >
-          {{ contextMenu.task.mediaInfo.is_video ? '✂️ 截取与裁切' : '✂️ 裁切画面' }}
-        </button>
-
-        <button
           @click="aiTagSingle(contextMenu.task!); contextMenu.visible = false"
           class="w-full text-left px-3 py-2 rounded-lg hover:bg-[#24a1de] hover:text-white flex items-center gap-2 transition cursor-pointer"
         >
           ✨ AI 识别此项 Emoji
-        </button>
-
-        <button
-          @click="openKeywordsModal(contextMenu.task!); contextMenu.visible = false"
-          class="w-full text-left px-3 py-2 rounded-lg hover:bg-[#24a1de] hover:text-white flex items-center gap-2 transition cursor-pointer"
-        >
-          🏷️ 编辑关键词
         </button>
 
         <button
@@ -1474,7 +2347,10 @@ async function triggerAiTagAll() {
       :initial-end-time="activeClipTask.endTime"
       :initial-crop="activeClipTask.crop"
       :initial-crop-radius="activeClipTask.cropRadius"
+      :initial-mirror="activeClipTask.mirror"
       :initial-emoji="activeClipTask.emoji"
+      :initial-clips="clipModalClips"
+      :initial-clip-index="clipModalFocusIdx"
       @close="activeClipTask = null"
       @confirm="handleClipsGenerated"
     />
@@ -1486,11 +2362,11 @@ async function triggerAiTagAll() {
     />
 
     <KeywordsModal
-      v-if="keywordsTask"
-      :keywords="keywordsTask.keywords"
-      :file-name="keywordsTask.mediaInfo.file_name"
-      :emoji="keywordsTask.emoji"
-      @close="keywordsTask = null"
+      v-if="keywordsTargets?.length"
+      :keywords="keywordsModalSeed"
+      :file-name="keywordsModalFileName"
+      :emoji="keywordsModalEmoji"
+      @close="keywordsTargets = null"
       @save="saveKeywords"
     />
   </div>
