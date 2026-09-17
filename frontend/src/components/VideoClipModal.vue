@@ -411,6 +411,14 @@
                     📐 同步形状
                   </button>
 
+                  <button
+                    type="button"
+                    @click="clearCrop"
+                    class="btn-subtle px-2.5 py-1 text-slate-400 hover:text-rose-400"
+                    title="清除当前片段的裁切框"
+                  >
+                    🗑️ 清除裁切
+                  </button>
                 </div>
 
                 <div class="font-mono text-sky-400 font-semibold">
@@ -459,6 +467,7 @@
                   : 'bg-[#171922] border-[#252833] hover:border-slate-700'
               ]"
               @click="selectClip(idx)"
+              @contextmenu.prevent="onClipContextMenu($event, idx)"
             >
               <!-- Thumbnail -->
               <div
@@ -490,7 +499,7 @@
                     class="w-16 bg-[#11131a] border border-[#2b3040] rounded px-1 text-center text-slate-200 placeholder:text-slate-600 focus:border-sky-500 outline-none text-[11px]"
                   />
                 </div>
-                <div class="text-[11px] text-slate-400 flex items-center space-x-2">
+                <div class="text-[11px] text-slate-400 flex items-center flex-wrap gap-1.5">
                   <span class="font-semibold text-slate-300">{{ clipDurationLabel(clip) }}</span>
                   <span v-if="clip.mirror" class="text-amber-400 font-mono text-[10px] bg-amber-950/60 px-1 rounded border border-amber-800/40">
                     🪞 镜像
@@ -498,56 +507,30 @@
                   <span v-if="clip.crop" class="text-sky-400 font-mono text-[10px] bg-sky-950/60 px-1 rounded border border-sky-800/40">
                     [✂️ {{ cropRadiusLabel(clip.cropRadius) }} {{ clip.crop[2] }}×{{ clip.crop[3] }}]
                   </span>
+                  <span
+                    v-if="isClipPlaying(idx, 'once')"
+                    class="text-emerald-400 font-mono text-[10px] bg-emerald-950/60 px-1 rounded border border-emerald-800/40"
+                  >
+                    ▶️ 播放中
+                  </span>
+                  <span
+                    v-else-if="isClipPlaying(idx, 'loop')"
+                    class="text-emerald-400 font-mono text-[10px] bg-emerald-950/60 px-1 rounded border border-emerald-800/40"
+                  >
+                    🔁 循环中
+                  </span>
                 </div>
               </div>
 
-              <!-- Actions -->
-              <div class="flex flex-col space-y-1">
-                <button
-                  type="button"
-                  @click.stop="toggleClipMirror(idx)"
-                  :class="[
-                    'p-1 rounded text-xs transition',
-                    clip.mirror
-                      ? 'text-amber-400 bg-amber-950/60 hover:bg-amber-900/60'
-                      : 'text-slate-400 hover:text-amber-400 hover:bg-slate-800'
-                  ]"
-                  :title="clip.mirror ? '取消此片段镜像' : '为此片段开启镜像'"
-                >
-                  🪞
-                </button>
-                <button
-                  @click.stop="playClip(idx, 'once')"
-                  :class="[
-                    'p-1 rounded text-xs',
-                    isClipPlaying(idx, 'once')
-                      ? 'text-emerald-400 bg-emerald-950/50 hover:bg-emerald-900/50'
-                      : 'text-slate-400 hover:text-sky-400 hover:bg-slate-800'
-                  ]"
-                  :title="isClipPlaying(idx, 'once') ? '停止播放' : '播放一次，到头停止'"
-                >
-                  {{ isClipPlaying(idx, 'once') ? '⏸️' : '▶️' }}
-                </button>
-                <button
-                  @click.stop="playClip(idx, 'loop')"
-                  :class="[
-                    'p-1 rounded text-xs',
-                    isClipPlaying(idx, 'loop')
-                      ? 'text-emerald-400 bg-emerald-950/50 hover:bg-emerald-900/50'
-                      : 'text-slate-400 hover:text-sky-400 hover:bg-slate-800'
-                  ]"
-                  :title="isClipPlaying(idx, 'loop') ? '停止循环播放' : '循环播放此片段'"
-                >
-                  {{ isClipPlaying(idx, 'loop') ? '⏸️' : '🔁' }}
-                </button>
-                <button
-                  @click.stop="deleteClip(idx)"
-                  class="p-1 text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 rounded text-xs"
-                  title="删除此片段"
-                >
-                  🗑️
-                </button>
-              </div>
+              <!-- Context menu trigger button -->
+              <button
+                type="button"
+                @click.stop="onClipContextMenu($event, idx)"
+                class="p-1 rounded text-slate-400 hover:text-white hover:bg-slate-800 transition text-xs opacity-70 hover:opacity-100"
+                title="片段选项 (右键菜单)"
+              >
+                ⋮
+              </button>
             </div>
           </div>
 
@@ -662,6 +645,40 @@
         </div>
       </div>
     </div>
+
+    <!-- Clip Item Right-Click Context Menu -->
+    <Teleport to="body">
+      <div
+        v-if="clipContextMenu.visible && clipContextMenu.clipIdx >= 0"
+        :style="{ left: `${clipContextMenu.x}px`, top: `${clipContextMenu.y}px` }"
+        class="fixed z-[9999] bg-[#16181d] border border-[#282b35] rounded-xl shadow-2xl p-1 text-xs text-gray-200 min-w-[150px] space-y-0.5 select-none animate-in fade-in zoom-in-95 duration-75"
+        @click.stop
+      >
+        <button
+          @click="playClipFromMenu('once')"
+          class="w-full text-left px-3 py-1.5 rounded-lg hover:bg-[#24a1de] hover:text-white flex items-center gap-2 transition cursor-pointer"
+        >
+          <span>{{ isClipPlaying(clipContextMenu.clipIdx, 'once') ? '⏸️ 停止播放' : '▶️ 播放' }}</span>
+        </button>
+
+        <button
+          @click="playClipFromMenu('loop')"
+          class="w-full text-left px-3 py-1.5 rounded-lg hover:bg-[#24a1de] hover:text-white flex items-center gap-2 transition cursor-pointer"
+        >
+          <span>{{ isClipPlaying(clipContextMenu.clipIdx, 'loop') ? '⏸️ 停止循环' : '🔁 循环播放' }}</span>
+        </button>
+
+        <div class="h-px bg-[#252831] my-1"></div>
+
+        <button
+          @click="deleteClipFromMenu"
+          class="w-full text-left px-3 py-1.5 rounded-lg hover:bg-red-500 hover:text-white flex items-center justify-between text-red-400 transition cursor-pointer"
+        >
+          <span>🗑️ 删除</span>
+          <span class="text-[10px] opacity-70 font-mono">Del</span>
+        </button>
+      </div>
+    </Teleport>
 
   </div>
 </template>
@@ -1329,30 +1346,21 @@ const onVideoError = () => {
 const toggleCrop = () => {
   const curClip = clips.value[selectedClipIdx.value]
   const turningOn = !cropActive.value
-  if (turningOn && curClip && !curClip.crop) {
+  if (turningOn && curClip && !curClip.crop && !currentCrop.value) {
     aspectMode.value = defaultCropAspect.value
     cropRadius.value = defaultCropRadius.value
-    currentCrop.value = null
   }
   cropActive.value = turningOn
+}
+
+const clearCrop = () => {
+  cropActive.value = false
+  const curClip = clips.value[selectedClipIdx.value]
   if (curClip) {
-    if (cropActive.value) {
-      if (curClip.crop) {
-        currentCrop.value = [...curClip.crop]
-        cropRadius.value = clampCropRadius(curClip.cropRadius)
-      } else if (cropOverlayRef.value) {
-        cropOverlayRef.value.resetToDefault()
-        curClip.crop = currentCrop.value ? [...currentCrop.value] : undefined
-        curClip.cropRadius = cropRadius.value
-      } else {
-        curClip.cropRadius = cropRadius.value
-      }
-    } else {
-      curClip.crop = undefined
-      curClip.cropRadius = 0
-      currentCrop.value = null
-      cropRadius.value = 0
-    }
+    curClip.crop = undefined
+    curClip.cropRadius = 0
+    currentCrop.value = null
+    cropRadius.value = 0
     refreshThumbnail(curClip)
   }
 }
@@ -1461,21 +1469,49 @@ const toggleMirror = () => {
   }
 }
 
-const toggleClipMirror = (idx: number) => {
-  const clip = clips.value[idx]
-  if (!clip) return
-  clip.mirror = !clip.mirror
-  if (clip.crop) {
-    const vw = Math.max(16, props.mediaInfo.width)
-    const [cx, cy, cw, ch] = clip.crop
-    const newCx = Math.max(0, Math.min(vw - cw, vw - cx - cw))
-    clip.crop = [newCx, cy, cw, ch]
+const clipContextMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  clipIdx: -1,
+})
+
+const closeClipContextMenu = () => {
+  clipContextMenu.value.visible = false
+}
+
+const onClipContextMenu = (e: MouseEvent, idx: number) => {
+  e.preventDefault()
+  e.stopPropagation()
+  selectClip(idx)
+
+  const menuWidth = 160
+  const menuHeight = 120
+  const x = Math.min(e.clientX, window.innerWidth - menuWidth - 8)
+  const y = Math.min(e.clientY, window.innerHeight - menuHeight - 8)
+
+  clipContextMenu.value = {
+    visible: true,
+    x: Math.max(8, x),
+    y: Math.max(8, y),
+    clipIdx: idx,
   }
-  if (selectedClipIdx.value === idx) {
-    currentMirror.value = !!clip.mirror
-    if (clip.crop) currentCrop.value = [...clip.crop]
+}
+
+const playClipFromMenu = (mode: 'once' | 'loop') => {
+  const idx = clipContextMenu.value.clipIdx
+  closeClipContextMenu()
+  if (idx >= 0 && idx < clips.value.length) {
+    playClip(idx, mode)
   }
-  refreshThumbnail(clip)
+}
+
+const deleteClipFromMenu = () => {
+  const idx = clipContextMenu.value.clipIdx
+  closeClipContextMenu()
+  if (idx >= 0 && idx < clips.value.length) {
+    deleteClip(idx)
+  }
 }
 
 
@@ -1537,8 +1573,8 @@ const addNewClip = () => {
     endTime: null,
     duration: 0,
     emoji: '',
-    crop: cropActive.value && currentCrop.value ? [...currentCrop.value] : undefined,
-    cropRadius: cropActive.value ? cropRadius.value : 0,
+    crop: currentCrop.value ? [...currentCrop.value] : undefined,
+    cropRadius: currentCrop.value ? cropRadius.value : 0,
     mirror: currentMirror.value,
   }
   clips.value.push(newClip)
@@ -1640,7 +1676,7 @@ const confirmClips = () => {
   }
   const curClip = clips.value[selectedClipIdx.value]
   if (curClip) {
-    if (cropActive.value && currentCrop.value) {
+    if (currentCrop.value) {
       curClip.crop = [...currentCrop.value]
       curClip.cropRadius = cropRadius.value
     }
@@ -1651,6 +1687,14 @@ const confirmClips = () => {
 
 // Hotkey listener
 const onKeyDown = (e: KeyboardEvent) => {
+  if (clipContextMenu.value.visible) {
+    if (e.key === 'Escape') {
+      e.preventDefault()
+      closeClipContextMenu()
+      return
+    }
+  }
+
   if (showClipSettings.value) return
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
 
@@ -1753,6 +1797,7 @@ const startProxyCache = () => {
 
 onMounted(() => {
   window.addEventListener('keydown', onKeyDown)
+  window.addEventListener('click', closeClipContextMenu)
   clips.value.forEach(c => refreshThumbnail(c))
   if (isVideo.value) {
     const focused = clips.value[selectedClipIdx.value] || clips.value[0]
@@ -1784,6 +1829,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeyDown)
+  window.removeEventListener('click', closeClipContextMenu)
   stopClockLoop()
   if (serverSeekTimer != null) clearTimeout(serverSeekTimer)
   if (proxyPollTimer) {
