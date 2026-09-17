@@ -84,7 +84,7 @@
 
             <!-- Crop Overlay -->
             <CropOverlay
-              v-if="cropActive"
+              v-if="cropActive && selectedClip"
               ref="cropOverlayRef"
               :video-width="mediaInfo.width"
               :video-height="mediaInfo.height"
@@ -129,8 +129,14 @@
                   </button>
                   <button
                     type="button"
-                    class="px-1.5 py-0.5 rounded text-[10px] font-sans text-sky-300 bg-sky-500/10 border border-sky-500/30 hover:bg-sky-500/20"
-                    title="把当前片段放到时间轴中间 (F)"
+                    :disabled="!hasSelectedClip"
+                    :class="[
+                      'px-1.5 py-0.5 rounded text-[10px] font-sans border',
+                      hasSelectedClip
+                        ? 'text-sky-300 bg-sky-500/10 border-sky-500/30 hover:bg-sky-500/20'
+                        : 'text-slate-500 bg-white/5 border-slate-700/50 opacity-40 cursor-not-allowed'
+                    ]"
+                    :title="hasSelectedClip ? '把当前片段放到时间轴中间 (F)' : '请先选择一个片段'"
                     @click="zoomToSelectedClip"
                   >
                     适应片段
@@ -241,23 +247,27 @@
             <div v-if="!isVideo" class="flex items-center justify-between pt-1">
               <div class="flex items-center space-x-1.5 text-xs">
                 <button
+                  :disabled="!hasSelectedClip"
                   @click="toggleCrop"
                   :class="[
-                    'px-3 py-1 rounded font-semibold transition text-xs',
+                    'px-3 py-1 rounded font-semibold transition text-xs disabled:opacity-40 disabled:cursor-not-allowed',
                     cropActive ? 'bg-sky-500 hover:bg-sky-400 text-white' : 'btn-subtle text-sky-400'
                   ]"
-                  title="开启/关闭画面裁切框"
+                  :title="hasSelectedClip ? '开启/关闭画面裁切框' : '请先选择一个片段'"
                 >
                   ✂️ 画面裁切
                 </button>
                 <button
                   type="button"
+                  :disabled="!hasSelectedClip"
                   @click="toggleMirror"
                   :class="[
-                    'px-3 py-1 rounded font-semibold transition flex items-center space-x-1',
+                    'px-3 py-1 rounded font-semibold transition flex items-center space-x-1 disabled:opacity-40 disabled:cursor-not-allowed',
                     currentMirror ? 'bg-amber-500 hover:bg-amber-400 text-white' : 'btn-subtle text-amber-400'
                   ]"
-                  :title="currentMirror ? '已开启镜像翻转 (快捷键 M)' : '镜像翻转画面 (快捷键 M)'"
+                  :title="!hasSelectedClip
+                    ? '请先选择一个片段'
+                    : currentMirror ? '已开启镜像翻转 (快捷键 M)' : '镜像翻转画面 (快捷键 M)'"
                 >
                   <span>🪞 镜像</span>
                 </button>
@@ -319,8 +329,12 @@
                 <!-- Set Start / End -->
                 <button
                   @click="setCurrentAsStart"
-                  class="btn-subtle px-2.5 py-1"
-                  title="设当前时刻为起点 (快捷键 [)"
+                  :disabled="!hasSelectedClip"
+                  :class="[
+                    'btn-subtle px-2.5 py-1',
+                    !hasSelectedClip ? 'opacity-40 cursor-not-allowed' : ''
+                  ]"
+                  :title="hasSelectedClip ? '设当前时刻为起点 (快捷键 [)' : '请先选择一个片段'"
                 >
                   🚩
                 </button>
@@ -331,7 +345,9 @@
                     'btn-subtle px-2.5 py-1',
                     !canSetEnd ? 'opacity-40 cursor-not-allowed' : ''
                   ]"
-                  :title="canSetEnd ? '设当前时刻为终点 (快捷键 ])' : '终点必须晚于起点'"
+                  :title="!hasSelectedClip
+                    ? '请先选择一个片段'
+                    : canSetEnd ? '设当前时刻为终点 (快捷键 ])' : '终点必须晚于起点'"
                 >
                   🏁
                 </button>
@@ -339,11 +355,12 @@
                 <!-- Crop Toggle -->
                 <button
                   @click="toggleCrop"
+                  :disabled="!hasSelectedClip"
                   :class="[
-                    'px-3 py-1 rounded font-semibold transition',
+                    'px-3 py-1 rounded font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed',
                     cropActive ? 'bg-sky-500 hover:bg-sky-400 text-white' : 'btn-subtle text-sky-400'
                   ]"
-                  title="开启/关闭画面裁切框"
+                  :title="hasSelectedClip ? '开启/关闭画面裁切框' : '请先选择一个片段'"
                 >
                   ✂️ 画面裁切
                 </button>
@@ -352,11 +369,14 @@
                 <button
                   type="button"
                   @click="toggleMirror"
+                  :disabled="!hasSelectedClip"
                   :class="[
-                    'px-3 py-1 rounded font-semibold transition flex items-center space-x-1',
+                    'px-3 py-1 rounded font-semibold transition flex items-center space-x-1 disabled:opacity-40 disabled:cursor-not-allowed',
                     currentMirror ? 'bg-amber-500 hover:bg-amber-400 text-white' : 'btn-subtle text-amber-400'
                   ]"
-                  :title="currentMirror ? '已开启镜像翻转 (快捷键 M)' : '镜像翻转画面 (快捷键 M)'"
+                  :title="!hasSelectedClip
+                    ? '请先选择一个片段'
+                    : currentMirror ? '已开启镜像翻转 (快捷键 M)' : '镜像翻转画面 (快捷键 M)'"
                 >
                   <span>🪞 镜像</span>
                 </button>
@@ -387,7 +407,11 @@
                   <span class="text-slate-300 font-semibold">✂️ 裁切比例:</span>
                   <select
                     v-model="aspectMode"
-                    class="bg-[#1e222b] border border-[#334155] text-slate-200 rounded px-2 py-1 text-xs outline-none focus:border-sky-500"
+                    :disabled="!hasSelectedClip"
+                    :class="[
+                      'bg-[#1e222b] border border-[#334155] text-slate-200 rounded px-2 py-1 text-xs outline-none focus:border-sky-500',
+                      !hasSelectedClip ? 'opacity-40 cursor-not-allowed' : ''
+                    ]"
                   >
                     <option v-for="opt in cropAspectOptions" :key="opt.value" :value="opt.value">
                       {{ opt.label }}
@@ -396,8 +420,12 @@
 
                   <button
                     @click="resetCropCenter"
-                    class="btn-subtle px-2.5 py-1 text-slate-300"
-                    title="将裁切框居中重置"
+                    :disabled="!hasSelectedClip"
+                    :class="[
+                      'btn-subtle px-2.5 py-1 text-slate-300',
+                      !hasSelectedClip ? 'opacity-40 cursor-not-allowed' : ''
+                    ]"
+                    :title="hasSelectedClip ? '将裁切框居中重置' : '请先选择一个片段'"
                   >
                     🔄 重置居中
                   </button>
@@ -405,8 +433,14 @@
                   <button
                     v-if="isVideo"
                     @click="applyCropShapeToAll"
-                    class="btn-subtle px-2.5 py-1 text-sky-300 hover:text-sky-200"
-                    title="将当前宽高与圆角应用到所有片段，保留各自位置"
+                    :disabled="!hasSelectedClip || !currentCrop"
+                    :class="[
+                      'btn-subtle px-2.5 py-1 text-sky-300 hover:text-sky-200',
+                      !hasSelectedClip || !currentCrop ? 'opacity-40 cursor-not-allowed' : ''
+                    ]"
+                    :title="!hasSelectedClip
+                      ? '请先选择一个片段'
+                      : '将当前宽高与圆角应用到所有片段，保留各自位置'"
                   >
                     📐 同步形状
                   </button>
@@ -414,8 +448,12 @@
                   <button
                     type="button"
                     @click="clearCrop"
-                    class="btn-subtle px-2.5 py-1 text-slate-400 hover:text-rose-400"
-                    title="清除当前片段的裁切框"
+                    :disabled="!hasSelectedClip"
+                    :class="[
+                      'btn-subtle px-2.5 py-1 text-slate-400 hover:text-rose-400',
+                      !hasSelectedClip ? 'opacity-40 cursor-not-allowed' : ''
+                    ]"
+                    :title="hasSelectedClip ? '清除当前片段的裁切框' : '请先选择一个片段'"
                   >
                     🗑️ 清除裁切
                   </button>
@@ -434,10 +472,14 @@
                   min="0"
                   max="100"
                   step="1"
+                  :disabled="!hasSelectedClip"
                   :value="Math.round(cropRadius * 100)"
                   @input="onRadiusInput"
-                  class="flex-1 h-1.5 bg-[#252833] rounded-lg appearance-none cursor-pointer accent-sky-500"
-                  title="0 直角，100 圆形"
+                  :class="[
+                    'flex-1 h-1.5 bg-[#252833] rounded-lg appearance-none accent-sky-500',
+                    hasSelectedClip ? 'cursor-pointer' : 'opacity-40 cursor-not-allowed'
+                  ]"
+                  :title="hasSelectedClip ? '0 直角，100 圆形' : '请先选择一个片段'"
                 />
                 <span class="text-slate-500 text-[11px]">圆形</span>
                 <span class="font-mono text-sky-400 w-16 text-right">{{ cropRadiusLabel(cropRadius) }}</span>
@@ -791,6 +833,7 @@ const isScrubbing = computed(() => timelineAction.value === 'scrub')
 
 const clipThumbnails = ref<Record<string, string>>({})
 const selectedClip = computed(() => clips.value[selectedClipIdx.value] ?? null)
+const hasSelectedClip = computed(() => !!selectedClip.value)
 
 function clipHasEnd(clip: ClipItem | null | undefined): clip is ClipItem & { endTime: number } {
   return !!clip && clip.endTime != null && Number.isFinite(clip.endTime) && clip.endTime > clip.startTime
@@ -1347,9 +1390,10 @@ const onVideoError = () => {
 }
 
 const toggleCrop = () => {
-  const curClip = clips.value[selectedClipIdx.value]
+  const curClip = selectedClip.value
+  if (!curClip) return
   const turningOn = !cropActive.value
-  if (turningOn && curClip && !curClip.crop && !currentCrop.value) {
+  if (turningOn && !curClip.crop && !currentCrop.value) {
     aspectMode.value = defaultCropAspect.value
     cropRadius.value = defaultCropRadius.value
   }
@@ -1357,6 +1401,7 @@ const toggleCrop = () => {
 }
 
 const clearCrop = () => {
+  if (!hasSelectedClip.value) return
   cropActive.value = false
   const curClip = clips.value[selectedClipIdx.value]
   if (curClip) {
@@ -1369,6 +1414,7 @@ const clearCrop = () => {
 }
 
 const onRadiusInput = (e: Event) => {
+  if (!hasSelectedClip.value) return
   const pct = parseFloat((e.target as HTMLInputElement).value)
   cropRadius.value = clampCropRadius(pct / 100)
   const curClip = clips.value[selectedClipIdx.value]
@@ -1380,6 +1426,7 @@ const onRadiusInput = (e: Event) => {
 }
 
 const resetCropCenter = () => {
+  if (!hasSelectedClip.value) return
   if (cropOverlayRef.value) {
     cropOverlayRef.value.resetToDefault()
   }
@@ -1405,7 +1452,7 @@ function clampCropBox(
 }
 
 const applyCropShapeToAll = () => {
-  if (!currentCrop.value) return
+  if (!hasSelectedClip.value || !currentCrop.value) return
   const [, , sw, sh] = currentCrop.value
   const radiusCopy = cropRadius.value
   const vw = Math.max(16, props.mediaInfo.width)
@@ -1434,7 +1481,7 @@ const canSetEnd = computed(() => {
 })
 
 const setCurrentAsStart = () => {
-  const curClip = clips.value[selectedClipIdx.value]
+  const curClip = selectedClip.value
   if (curClip) {
     curClip.startTime = Number(currentTime.value.toFixed(3))
     if (curClip.endTime != null && curClip.endTime <= curClip.startTime) {
@@ -1457,19 +1504,18 @@ const setCurrentAsEnd = () => {
 }
 
 const toggleMirror = () => {
+  const curClip = selectedClip.value
+  if (!curClip) return
   currentMirror.value = !currentMirror.value
-  const curClip = clips.value[selectedClipIdx.value]
-  if (curClip) {
-    curClip.mirror = currentMirror.value
-    if (curClip.crop) {
-      const vw = Math.max(16, props.mediaInfo.width)
-      const [cx, cy, cw, ch] = curClip.crop
-      const newCx = Math.max(0, Math.min(vw - cw, vw - cx - cw))
-      curClip.crop = [newCx, cy, cw, ch]
-      currentCrop.value = [...curClip.crop]
-    }
-    refreshThumbnail(curClip)
+  curClip.mirror = currentMirror.value
+  if (curClip.crop) {
+    const vw = Math.max(16, props.mediaInfo.width)
+    const [cx, cy, cw, ch] = curClip.crop
+    const newCx = Math.max(0, Math.min(vw - cw, vw - cx - cw))
+    curClip.crop = [newCx, cy, cw, ch]
+    currentCrop.value = [...curClip.crop]
   }
+  refreshThumbnail(curClip)
 }
 
 const clipContextMenu = ref({
@@ -1711,6 +1757,7 @@ const onKeyDown = (e: KeyboardEvent) => {
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
 
   if (e.key === 'm' || e.key === 'M') {
+    if (!hasSelectedClip.value) return
     e.preventDefault()
     toggleMirror()
     return
@@ -1722,9 +1769,11 @@ const onKeyDown = (e: KeyboardEvent) => {
     e.preventDefault()
     togglePlay()
   } else if (e.key === '[') {
+    if (!hasSelectedClip.value) return
     e.preventDefault()
     setCurrentAsStart()
   } else if (e.key === ']') {
+    if (!hasSelectedClip.value) return
     e.preventDefault()
     setCurrentAsEnd()
   } else if (e.code === 'ArrowLeft') {
@@ -1743,6 +1792,7 @@ const onKeyDown = (e: KeyboardEvent) => {
     e.preventDefault()
     resetTimelineZoom()
   } else if (e.key === 'f' || e.key === 'F') {
+    if (!hasSelectedClip.value) return
     e.preventDefault()
     zoomToSelectedClip()
   }
