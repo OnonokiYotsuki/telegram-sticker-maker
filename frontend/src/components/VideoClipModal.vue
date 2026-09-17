@@ -1887,7 +1887,13 @@ const checkProxyStatus = async (start = false) => {
   const qs = start ? 'start=1' : 'start=0'
   try {
     const res = await fetch(`${props.streamBaseUrl}/proxy_status?path=${enc}&${qs}`)
-    if (!res.ok) return
+    if (!res.ok) {
+      if (proxyLoading.value) {
+        proxyLoading.value = false
+        proxyError.value = `查询代理状态失败 (HTTP ${res.status})`
+      }
+      return
+    }
     const data = await res.json()
     if (data.status === 'ready' || data.status === 'not_needed') {
       if (!proxyReady.value) applyProxyReady()
@@ -1906,11 +1912,13 @@ const checkProxyStatus = async (start = false) => {
     if (data.status === 'generating' || start) {
       proxyLoading.value = true
       proxyProgress.value = Math.min(99, Math.round((data.progress || 0) * 100))
-      proxyPollTimer = setTimeout(() => checkProxyStatus(false), 400)
+      proxyPollTimer = setTimeout(() => checkProxyStatus(false), 150)
+    } else if (proxyLoading.value) {
+      proxyPollTimer = setTimeout(() => checkProxyStatus(false), 200)
     }
   } catch {
     if (proxyLoading.value) {
-      proxyPollTimer = setTimeout(() => checkProxyStatus(false), 800)
+      proxyPollTimer = setTimeout(() => checkProxyStatus(false), 500)
     }
   }
 }

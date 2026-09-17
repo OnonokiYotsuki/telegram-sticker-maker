@@ -1184,6 +1184,22 @@ function getThumbnailUrl(task: TaskItem): string {
   return url
 }
 
+function getTaskDuration(task: TaskItem): number {
+  if (task.startTime != null && task.endTime != null && task.endTime > task.startTime) {
+    return task.endTime - task.startTime
+  }
+  return task.mediaInfo?.duration || 0
+}
+
+function isTaskClipped(task: TaskItem): boolean {
+  if (!task.mediaInfo?.is_video) return false
+  const dur = task.mediaInfo.duration || 0
+  if (task.startTime != null && task.endTime != null) {
+    return task.startTime > 0.05 || (dur > 0 && task.endTime < dur - 0.05)
+  }
+  return !!task.clipLabel
+}
+
 function openFolder(filePath: string) {
   if (!filePath) return
   if (window.pywebview?.api?.open_folder) {
@@ -1666,7 +1682,7 @@ async function triggerAiTagAll() {
                   <tr>
                     <th class="py-2.5 px-3 w-14 text-center">预览</th>
                     <th class="py-2.5 px-3">原文件名</th>
-                    <th class="py-2.5 px-3 w-48 text-center">原规格</th>
+                    <th class="py-2.5 px-3 w-48 text-center">规格</th>
                     <th class="py-2.5 px-3 w-56">目标文件名</th>
                     <th class="py-2.5 px-3 w-36">关键词</th>
                     <th class="py-2.5 px-3 w-44">进度与状态</th>
@@ -1706,7 +1722,7 @@ async function triggerAiTagAll() {
                           v-if="task.mediaInfo.is_video"
                           class="absolute bottom-0.5 right-0.5 bg-black/80 rounded px-0.5 text-[8px] font-mono text-gray-300 leading-tight"
                         >
-                          {{ (task.endTime && task.startTime !== undefined ? (task.endTime - task.startTime) : task.mediaInfo.duration).toFixed(1) }}s
+                          {{ getTaskDuration(task).toFixed(1) }}s
                         </span>
                       </div>
                     </td>
@@ -1738,10 +1754,13 @@ async function triggerAiTagAll() {
                       </div>
                     </td>
 
-                    <!-- 3. 原规格 -->
+                    <!-- 3. 规格 -->
                     <td class="py-2 px-3 text-center font-mono text-[11px] text-gray-300">
-                      <div v-if="task.mediaInfo.is_video">
-                        {{ task.mediaInfo.width }}×{{ task.mediaInfo.height }} | {{ (task.mediaInfo.duration || 0).toFixed(1) }}s | {{ Math.round(task.mediaInfo.fps || 30) }}fps
+                      <div
+                        v-if="task.mediaInfo.is_video"
+                        :title="isTaskClipped(task) ? `有效时长: ${getTaskDuration(task).toFixed(2)}s (原片: ${(task.mediaInfo.duration || 0).toFixed(2)}s)` : undefined"
+                      >
+                        {{ task.mediaInfo.width }}×{{ task.mediaInfo.height }} | {{ getTaskDuration(task).toFixed(1) }}s | {{ Math.round(task.mediaInfo.fps || 30) }}fps
                         <span v-if="task.mediaInfo.has_alpha" class="text-emerald-400 font-sans ml-1">🟢Alpha</span>
                       </div>
                       <div v-else>
