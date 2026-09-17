@@ -179,6 +179,9 @@ class AppAPI:
                 raise StickerListError("已取消导入")
             missing = result.get("missing") or []
             self._log(f"📥 已解析导入列表：{result['count']} 项")
+            proxy_n = int(result.get("proxies") or 0)
+            if proxy_n:
+                self._log(f"📥 已恢复 {proxy_n} 个预览代理缓存")
             if missing:
                 self._log(f"⚠️ 有 {len(missing)} 个源文件缺失，已跳过")
             self._emit("onImportProgress", 0, int(result["count"] or 0), "正在加入任务列表...")
@@ -444,8 +447,10 @@ class AppAPI:
                     cancel_check=lambda: self._canceled,
                 )
                 missing = result.get("missing") or []
+                proxy_n = int(result.get("proxies") or 0)
+                extra = f"，附带 {proxy_n} 个预览代理" if proxy_n else ""
                 self._log(
-                    f"📤 已导出源文件+JSON：{result['count']} 项，复制 {result['copied']} 个文件 -> {result['path']}"
+                    f"📤 已导出源文件+JSON：{result['count']} 项，复制 {result['copied']} 个文件{extra} -> {result['path']}"
                 )
             else:
                 result = self._export_prepared(
@@ -457,7 +462,9 @@ class AppAPI:
                     cancel_check=lambda: self._canceled,
                 )
                 missing = result.get("missing") or []
-                self._log(f"📤 已导出转换前文件 {result['count']} 项 -> {result['path']}")
+                proxy_n = int(result.get("proxies") or 0)
+                extra = f"，附带 {proxy_n} 个预览代理" if proxy_n else ""
+                self._log(f"📤 已导出转换前文件 {result['count']} 项{extra} -> {result['path']}")
             if missing:
                 self._log(f"⚠️ 有 {len(missing)} 个源文件缺失，已跳过")
             zip_path = str(result.get("zip_path") or "")
@@ -564,6 +571,7 @@ class AppAPI:
         total_items = sum(len(rows) for rows in grouped.values())
         offset = 0
         total = 0
+        proxies = 0
         missing: List[str] = []
         last_path = ""
         stamp = default_pack_dir_name()
@@ -583,9 +591,10 @@ class AppAPI:
             )
             offset += int(result["count"]) + len(result.get("missing") or [])
             total += int(result["count"])
+            proxies += int(result.get("proxies") or 0)
             missing.extend(result.get("missing") or [])
             last_path = str(result["path"])
-        return {"path": last_path, "count": total, "missing": missing}
+        return {"path": last_path, "count": total, "proxies": proxies, "missing": missing}
 
     def _resolve_bundle_dir(self, directory: str = "") -> str:
         bundle_name = default_bundle_name()

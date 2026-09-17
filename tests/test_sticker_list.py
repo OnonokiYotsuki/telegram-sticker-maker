@@ -9,8 +9,10 @@ from PIL import Image
 
 from core.analyzer import MediaAnalyzer
 from core.pack_output import STICKERS_JSON_NAME
+from core.proxy_manager import get_proxy_manager, reset_proxy_manager, set_proxy_cache_dir
 from core.sticker_list import (
     BUNDLE_JSON_NAME,
+    BUNDLE_PROXIES_DIR,
     BUNDLE_SOURCES_DIR,
     LIST_KIND,
     StickerListError,
@@ -694,3 +696,126 @@ def test_sticker_list_mirror_preservation(tmp_path):
     assert len(imported["stickers"]) == 1
     item = imported["stickers"][0]
     assert item.get("mirror") is True
+
+
+def _plant_proxy(media_path: str) -> str:
+    dest = get_proxy_manager().get_proxy_path(media_path)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "wb") as fh:
+        fh.write(b"PROXY" * 500)
+    return dest
+
+
+def test_bundle_exports_and_imports_preview_proxy(tmp_path):
+    set_proxy_cache_dir(str(tmp_path / "cache"))
+    reset_proxy_manager()
+    try:
+        src = tmp_path / "clip.mkv"
+        src.write_bytes(b"mkv-bytes" * 100)
+        planted = _plant_proxy(str(src))
+        dest = tmp_path / "bundle"
+        result = write_sticker_bundle(
+            str(dest),
+            [
+                {"input_path": str(src), "emoji": "1️⃣", "is_video": True},
+                {"input_path": str(src), "emoji": "2️⃣", "is_video": True},
+            ],
+        )
+        assert result["proxies"] == 1
+        packed = dest / BUNDLE_PROXIES_DIR / "clip.mkv.mp4"
+        assert packed.is_file()
+        assert packed.read_bytes() == open(planted, "rb").read()
+        data = json.loads((dest / BUNDLE_JSON_NAME).read_text(encoding="utf-8"))
+        assert data["stickers"][0]["proxy"] == f"{BUNDLE_PROXIES_DIR}/clip.mkv.mp4"
+        assert data["stickers"][1]["proxy"] == f"{BUNDLE_PROXIES_DIR}/clip.mkv.mp4"
+
+        imported = import_sticker_bundle(str(dest))
+        assert imported["proxies"] == 1
+        media = imported["stickers"][0]["input_path"]
+        assert "proxy" not in imported["stickers"][0]
+        assert get_proxy_manager().is_proxy_ready(media)
+        assert imported["stickers"][1]["input_path"] == media
+    finally:
+        reset_proxy_manager()
+        set_proxy_cache_dir(None)
+
+
+def test_bundle_zip_roundtrip_restores_proxy(tmp_path):
+    set_proxy_cache_dir(str(tmp_path / "cache"))
+    reset_proxy_manager()
+    try:
+        src = tmp_path / "clip.mkv"
+        src.write_bytes(b"mkv-bytes" * 100)
+        _plant_proxy(str(src))
+        zpath = tmp_path / "bundle.zip"
+        write_sticker_bundle(
+            str(tmp_path / "stage"),
+            [{"input_path": str(src), "is_video": True}],
+            zip_path=str(zpath),
+        )
+        with zipfile.ZipFile(zpath) as zf:
+            assert f"{BUNDLE_PROXIES_DIR}/clip.mkv.mp4" in zf.namelist()
+
+        get_proxy_manager().clear_cache()
+        imported = import_sticker_bundle(str(zpath))
+        assert imported["proxies"] == 1
+        assert get_proxy_manager().is_proxy_ready(imported["stickers"][0]["input_path"])
+    finally:
+        reset_proxy_manager()
+        set_proxy_cache_dir(None)
+
+
+def test_prepared_export_includes_proxy_only_for_whole_file(tmp_path):
+    set_proxy_cache_dir(str(tmp_path / "cache"))
+    reset_proxy_manager()
+    try:
+        src = tmp_path / "clip.mkv"
+        src.write_bytes(b"mkv-bytes" * 100)
+        _plant_proxy(str(src))
+        whole = tmp_path / "whole"
+        result = export_prepared_stickers(
+            [{"input_path": str(src), "emoji": "🎬", "is_video": True, "index": 1}],
+            str(whole),
+        )
+        assert result["proxies"] == 1
+        name = "001_🎬.mkv"
+        assert (whole / BUNDLE_PROXIES_DIR / f"{name}.mp4").is_file()
+        manifest = json.loads((whole / STICKERS_JSON_NAME).read_text(encoding="utf-8"))
+        assert manifest["stickers"][0]["proxy"] == f"{BUNDLE_PROXIES_DIR}/{name}.mp4"
+
+        clipped = tmp_path / "clip"
+        clipped_result = export_prepared_stickers(
+            [
+                {
+                    "input_path": str(src),
+                    "emoji": "✂️",
+                    "is_video": True,
+                    "index": 1,
+                    "start_time": 1.0,
+                    "end_time": 2.0,
+                    "duration": 10,
+                }
+            ],
+            str(clipped),
+        )
+        assert clipped_result["proxies"] == 0
+        clip_manifest = json.loads((clipped / STICKERS_JSON_NAME).read_text(encoding="utf-8"))
+        assert "proxy" not in clip_manifest["stickers"][0]
+    finally:
+        reset_proxy_manager()
+        set_proxy_cache_dir(None)
+
+
+def test_mp4_does_not_export_proxy(tmp_path):
+    set_proxy_cache_dir(str(tmp_path / "cache"))
+    reset_proxy_manager()
+    try:
+        src = tmp_path / "clip.mp4"
+        src.write_bytes(b"mp4-bytes" * 100)
+        dest = tmp_path / "bundle"
+        result = write_sticker_bundle(str(dest), [{"input_path": str(src), "is_video": True}])
+        assert result["proxies"] == 0
+        assert not (dest / BUNDLE_PROXIES_DIR).exists()
+    finally:
+        reset_proxy_manager()
+        set_proxy_cache_dir(None)

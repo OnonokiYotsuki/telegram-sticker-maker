@@ -57,6 +57,7 @@ class PackEntry:
     keywords: tuple[str, ...] = ()
     arcname: str = ""
     crop_radius: float = 0.0
+    proxy: str = ""
 
     def __post_init__(self):
         object.__setattr__(self, "emoji", (self.emoji or "").strip())
@@ -132,6 +133,7 @@ def resolve_entries(
                 keywords=normalize_keywords(entry.keywords),
                 arcname=arc,
                 crop_radius=entry.crop_radius,
+                proxy=(entry.proxy or "").replace("\\", "/").strip(),
             )
         )
     return resolved
@@ -147,6 +149,8 @@ def build_stickers_manifest(entries: Iterable[PackEntry]) -> dict:
             "crop_radius": round(item.crop_radius, 4),
             "shape": crop_radius_label(item.crop_radius),
         }
+        if item.proxy:
+            row["proxy"] = item.proxy.replace("\\", "/")
         stickers.append(row)
     return {"stickers": stickers}
 
@@ -155,6 +159,7 @@ def pack_stickers(
     entries: Iterable[PackEntry],
     zip_path: str,
     allow_any_file: bool = False,
+    extra_files: Optional[Iterable[tuple[str, str]]] = None,
 ) -> dict:
     """Write sticker files into a zip. Returns pack stats."""
     resolved = resolve_entries(entries, allow_any_file=allow_any_file)
@@ -170,6 +175,15 @@ def pack_stickers(
         for item in resolved:
             zf.write(item.path, arcname=item.arcname)
         zf.writestr(STICKERS_JSON_NAME, payload)
+        used = {STICKERS_JSON_NAME, *(item.arcname for item in resolved)}
+        for extra_path, extra_arc in extra_files or []:
+            if not extra_path or not os.path.isfile(extra_path):
+                continue
+            arc = (extra_arc or os.path.basename(extra_path)).replace("\\", "/").lstrip("/")
+            if not arc or arc in used:
+                continue
+            zf.write(extra_path, arcname=arc)
+            used.add(arc)
 
     return {
         "path": zip_path,

@@ -31,6 +31,7 @@ LIST_KIND = "sticker_maker_list"
 LIST_VERSION = 1
 BUNDLE_JSON_NAME = "sticker_list.json"
 BUNDLE_SOURCES_DIR = "sources"
+BUNDLE_PROXIES_DIR = "proxies"
 
 
 class StickerListError(ValueError):
@@ -117,6 +118,9 @@ def build_sticker_list_document(
             item["crop_radius"] = max(0.0, min(1.0, radius))
         if bool(raw.get("mirror")):
             item["mirror"] = True
+        proxy = str(raw.get("proxy") or "").replace("\\", "/").strip()
+        if proxy:
+            item["proxy"] = proxy
         for key in ("clip_group_id", "clip_id", "clip_label"):
             val = str(raw.get(key) or "").strip()
             if val:
@@ -158,6 +162,31 @@ def _raise_if_canceled(cancel_check: Optional[ExportCancelCheck]) -> None:
         raise StickerListError("已取消导出")
 
 
+def _proxy_bundle_name(media_name: str) -> str:
+    base = os.path.basename(str(media_name or "").replace("\\", "/")).strip() or "source"
+    return f"{base}.mp4"
+
+
+def _copy_ready_proxy(src_media: str, dest_proxy: str) -> bool:
+    from core.proxy_manager import get_proxy_manager
+
+    ready = get_proxy_manager().ready_proxy_path(src_media)
+    if not ready:
+        return False
+    os.makedirs(os.path.dirname(dest_proxy) or ".", exist_ok=True)
+    shutil.copy2(ready, dest_proxy)
+    return os.path.isfile(dest_proxy) and os.path.getsize(dest_proxy) > 1024
+
+
+def _install_imported_proxy(media_path: str, proxy_ref: str, root: str) -> bool:
+    from core.proxy_manager import get_proxy_manager
+
+    src = resolve_import_media_path(root, proxy_ref)
+    if not src:
+        return False
+    return get_proxy_manager().install_proxy_file(media_path, src)
+
+
 def write_sticker_bundle(
     dest_dir: str,
     stickers: Iterable[Mapping[str, Any]],
@@ -173,6 +202,7 @@ def write_sticker_bundle(
 
     used: set[str] = set()
     path_map: dict[str, str] = {}
+    proxy_rel_map: dict[str, str] = {}
     missing: list[str] = []
     remapped: list[dict[str, Any]] = []
     rows = [raw for raw in stickers if str(raw.get("input_path") or "").strip()]
@@ -194,10 +224,17 @@ def write_sticker_bundle(
             copied = os.path.join(sources_dir, name)
             shutil.copy2(src, copied)
             path_map[src] = f"{BUNDLE_SOURCES_DIR}/{name}"
+            proxy_dest = os.path.join(root, BUNDLE_PROXIES_DIR, _proxy_bundle_name(name))
+            if _copy_ready_proxy(src, proxy_dest):
+                proxy_rel_map[src] = f"{BUNDLE_PROXIES_DIR}/{_proxy_bundle_name(name)}"
         rel = path_map[src]
         item = dict(raw)
         item["input_path"] = rel
         item["file_name"] = os.path.basename(rel)
+        if src in proxy_rel_map:
+            item["proxy"] = proxy_rel_map[src]
+        else:
+            item.pop("proxy", None)
         remapped.append(item)
         abs_copied = os.path.join(root, rel.replace("/", os.sep))
         size = os.path.getsize(abs_copied) if os.path.isfile(abs_copied) else 0
@@ -221,6 +258,7 @@ def write_sticker_bundle(
         "json_path": written["path"],
         "count": written["count"],
         "copied": len(path_map),
+        "proxies": len(proxy_rel_map),
         "missing": missing,
     }
     if zip_path:
@@ -467,6 +505,7 @@ def export_prepared_stickers(
     os.makedirs(root, exist_ok=True)
     used: set[str] = set()
     entries: list[PackEntry] = []
+    extra_files: list[tuple[str, str]] = []
     missing: list[str] = []
     rows = [raw for raw in stickers if str(raw.get("input_path") or "").strip()]
     total = len(rows)
@@ -491,14 +530,17 @@ def export_prepared_stickers(
         ext = prepared_output_ext(src, is_video=is_video, crop=crop, radius=radius, mirror=mirror)
         name = unique_arcname(format_prepared_name(index, emoji, ext), used)
         out_path = os.path.join(root, name)
+        start_time = _as_optional_float(raw.get("start_time"))
+        end_time = _as_optional_float(raw.get("end_time"))
+        duration = _as_optional_float(raw.get("duration"))
         try:
             extract_source_clip(
                 src,
                 out_path,
                 is_video=is_video,
-                start_time=_as_optional_float(raw.get("start_time")),
-                end_time=_as_optional_float(raw.get("end_time")),
-                duration=_as_optional_float(raw.get("duration")),
+                start_time=start_time,
+                end_time=end_time,
+                duration=duration,
                 crop=crop,
                 crop_radius=radius,
                 mirror=mirror,
@@ -508,6 +550,18 @@ def export_prepared_stickers(
                 progress_callback(i, total, raw, phase="error", error=str(exc))
             raise
         size = os.path.getsize(out_path) if os.path.isfile(out_path) else 0
+        proxy_rel = ""
+        whole = (
+            is_video
+            and not crop
+            and not mirror
+            and should_copy_whole_file(is_video, start_time, end_time, duration)
+        )
+        if whole:
+            proxy_abs = os.path.join(root, BUNDLE_PROXIES_DIR, _proxy_bundle_name(name))
+            if _copy_ready_proxy(src, proxy_abs):
+                proxy_rel = f"{BUNDLE_PROXIES_DIR}/{_proxy_bundle_name(name)}"
+                extra_files.append((proxy_abs, proxy_rel))
         entries.append(
             PackEntry(
                 path=out_path,
@@ -515,6 +569,7 @@ def export_prepared_stickers(
                 keywords=raw.get("keywords"),
                 arcname=name,
                 crop_radius=radius,
+                proxy=proxy_rel,
             )
         )
         if progress_callback:
@@ -541,12 +596,18 @@ def export_prepared_stickers(
         "missing": missing,
         "files": [item.arcname for item in entries],
         "json_path": manifest_path,
+        "proxies": len(extra_files),
     }
     if zip_path:
         _raise_if_canceled(cancel_check)
         if progress_callback:
             progress_callback(len(entries), max(total, 1), {}, phase="pack")
-        packed = pack_stickers(entries, zip_path, allow_any_file=True)
+        packed = pack_stickers(
+            entries,
+            zip_path,
+            allow_any_file=True,
+            extra_files=extra_files,
+        )
         result["path"] = packed["path"]
         result["zip_path"] = packed["path"]
         result["bytes"] = packed["bytes"]
@@ -654,6 +715,9 @@ def _normalize_list_item(raw: Mapping[str, Any], root: str) -> Optional[dict[str
         val = str(raw.get(key) or "").strip()
         if val:
             item[key] = val
+    proxy = str(raw.get("proxy") or "").replace("\\", "/").strip()
+    if proxy:
+        item["proxy"] = proxy
     return item
 
 
@@ -672,6 +736,9 @@ def _normalize_pack_item(raw: Mapping[str, Any], root: str) -> Optional[dict[str
         item["crop_radius"] = max(0.0, min(1.0, radius))
     if bool(raw.get("mirror")):
         item["mirror"] = True
+    proxy = str(raw.get("proxy") or "").replace("\\", "/").strip()
+    if proxy:
+        item["proxy"] = proxy
     return item
 
 
@@ -709,6 +776,8 @@ def import_sticker_bundle(path: str) -> dict[str, Any]:
     mode = "sources" if doc.get("export_mode") == "sources" else "list"
     stickers: list[dict[str, Any]] = []
     missing: list[str] = []
+    proxies = 0
+    seen_proxy_media: set[str] = set()
     for raw in doc["stickers"]:
         if not isinstance(raw, Mapping):
             continue
@@ -719,6 +788,12 @@ def import_sticker_bundle(path: str) -> dict[str, Any]:
             original = str(raw.get("file") or raw.get("input_path") or "").strip()
             item = _normalize_pack_item(raw, root)
         if item:
+            proxy_ref = str(item.pop("proxy", "") or "").strip()
+            media = item["input_path"]
+            if proxy_ref and media not in seen_proxy_media:
+                if _install_imported_proxy(media, proxy_ref, root):
+                    proxies += 1
+                seen_proxy_media.add(media)
             stickers.append(item)
         elif original:
             missing.append(original)
@@ -731,6 +806,7 @@ def import_sticker_bundle(path: str) -> dict[str, Any]:
         "count": len(stickers),
         "stickers": stickers,
         "missing": missing,
+        "proxies": proxies,
         "json_path": os.path.abspath(manifest),
         "root": os.path.abspath(root),
     }

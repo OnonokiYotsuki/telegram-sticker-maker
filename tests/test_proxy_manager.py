@@ -77,3 +77,22 @@ def test_ensure_proxy_creates_seekable_mp4(tmp_path):
     finally:
         reset_proxy_manager()
         set_proxy_cache_dir(None)
+
+
+def test_install_proxy_file_keys_to_new_path(tmp_path):
+    set_proxy_cache_dir(str(tmp_path / "cache"))
+    reset_proxy_manager()
+    try:
+        src = tmp_path / "a.mkv"
+        imported = tmp_path / "b.mkv"
+        src.write_bytes(b"a" * 2000)
+        imported.write_bytes(b"a" * 2000)
+        blob = tmp_path / "exported.mp4"
+        blob.write_bytes(b"P" * 2048)
+        pm = get_proxy_manager()
+        assert pm.install_proxy_file(str(imported), str(blob))
+        assert pm.is_proxy_ready(str(imported))
+        assert not pm.is_proxy_ready(str(src))
+    finally:
+        reset_proxy_manager()
+        set_proxy_cache_dir(None)

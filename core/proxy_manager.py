@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -167,6 +168,42 @@ class ProxyManager:
         )
         thread.start()
         return task
+
+    def ready_proxy_path(self, file_path: str) -> Optional[str]:
+        """Return the cached proxy file if it is ready to copy into a bundle."""
+        if not needs_proxy(file_path):
+            return None
+        st = self.get_proxy_status(file_path)
+        if st.status != "ready" or not st.proxy_path:
+            return None
+        if os.path.isfile(st.proxy_path) and os.path.getsize(st.proxy_path) > 1024:
+            return st.proxy_path
+        return None
+
+    def install_proxy_file(self, file_path: str, proxy_src: str) -> bool:
+        """Copy an exported proxy into the cache slot for ``file_path``."""
+        if not needs_proxy(file_path):
+            return False
+        if not os.path.isfile(proxy_src) or os.path.getsize(proxy_src) <= 1024:
+            return False
+        dest = self.get_proxy_path(file_path)
+        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+        src_abs = os.path.abspath(proxy_src)
+        dest_abs = os.path.abspath(dest)
+        if src_abs != dest_abs:
+            shutil.copy2(src_abs, dest_abs)
+            os.utime(dest_abs, None)
+        if not os.path.isfile(dest_abs) or os.path.getsize(dest_abs) <= 1024:
+            return False
+        abs_media = os.path.abspath(file_path)
+        with self._lock:
+            self._tasks[abs_media] = ProxyTask(
+                status="ready",
+                progress=1.0,
+                proxy_path=dest_abs,
+            )
+        self._cleanup_old_proxies()
+        return True
 
     def cache_info(self) -> dict:
         cache_dir = get_proxy_cache_dir()
