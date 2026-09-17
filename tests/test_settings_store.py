@@ -54,9 +54,10 @@ def test_data_dir_roundtrip(tmp_path, monkeypatch):
     try:
         save_settings({"data_dir": str(data)})
         loaded = load_settings()
+        nested = data / "telegram_sticker_maker"
         assert os.path.normcase(loaded["data_dir"]) == os.path.normcase(str(data))
-        assert (data / "proxies").is_dir()
-        assert (data / "imports").is_dir()
+        assert (nested / "proxies").is_dir()
+        assert (nested / "imports").is_dir()
     finally:
         set_config_dir_override(None)
         set_data_dir_override(None)

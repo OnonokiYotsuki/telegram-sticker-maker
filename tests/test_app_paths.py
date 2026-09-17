@@ -1,10 +1,12 @@
 import os
 
 from core.app_paths import (
+    DATA_FOLDER_NAME,
     apply_data_dir_change,
     data_dir,
     import_dir,
     proxy_dir,
+    resolve_custom_data_dir,
     session_file,
     set_config_dir_override,
     set_data_dir_override,
@@ -40,13 +42,35 @@ def test_custom_data_dir_from_ini(tmp_path):
     set_data_dir_override(None)
     try:
         root = data_dir()
-        assert os.path.normcase(root) == os.path.normcase(str(data))
-        assert (data / "proxies").is_dir()
-        assert (data / "imports").is_dir()
-        assert session_file() == str(data / "session.json")
+        nested = data / DATA_FOLDER_NAME
+        assert os.path.normcase(root) == os.path.normcase(str(nested))
+        assert (nested / "proxies").is_dir()
+        assert (nested / "imports").is_dir()
+        assert session_file() == str(nested / "session.json")
     finally:
         set_config_dir_override(None)
         set_data_dir_override(None)
+
+
+def test_resolve_custom_data_dir_nests_app_folder(tmp_path):
+    parent = tmp_path / "2"
+    parent.mkdir()
+    nested = resolve_custom_data_dir(str(parent))
+    assert os.path.basename(nested) == DATA_FOLDER_NAME
+    assert os.path.normcase(os.path.dirname(nested)) == os.path.normcase(str(parent))
+
+
+def test_resolve_custom_data_dir_does_not_double_nest(tmp_path):
+    already = tmp_path / DATA_FOLDER_NAME
+    already.mkdir()
+    assert os.path.normcase(resolve_custom_data_dir(str(already))) == os.path.normcase(str(already))
+
+
+def test_resolve_custom_data_dir_keeps_existing_root(tmp_path):
+    old = tmp_path / "legacy"
+    old.mkdir()
+    (old / "session.json").write_text("{}", encoding="utf-8")
+    assert os.path.normcase(resolve_custom_data_dir(str(old))) == os.path.normcase(str(old))
 
 
 def test_apply_data_dir_change_copies_session(tmp_path):

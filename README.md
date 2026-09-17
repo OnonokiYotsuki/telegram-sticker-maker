@@ -170,7 +170,7 @@ uv run pytest
 
 （Windows 即 `%USERPROFILE%\.config\telegram_sticker_maker\`）
 
-session、预览代理、导入解压默认也在该目录（`session.json`、`proxies/`、`imports/`）。右侧「数据目录」可改到其它文件夹；`settings.ini` 仍留在上面的配置目录，用来记住这个路径。
+session、预览代理、导入解压默认也在该目录（`session.json`、`proxies/`、`imports/`）。右侧「数据目录」可改到其它文件夹，实际使用其中的 `telegram_sticker_maker` 子目录；`settings.ini` 仍留在上面的配置目录，用来记住所选路径。
 
 提示词偏向聊天表情（😂😭😡🥺 等），避免装饰性符号。识别失败时留空，可手动填写。右键任务可对选中项批量识别、转换，或统一设置关键词。
 
@@ -281,7 +281,7 @@ FFmpeg 未装，或新开的终端还没刷新 `PATH`。装完重开终端，再
 检查 Base URL 是否带 `/v1`、模型是否支持 vision、密钥是否有效。
 
 **关掉再开，上次的列表还在吗**  
-会。任务、裁切、Emoji、关键词写在数据目录的 `session.json`。默认与设置文件一起：`%USERPROFILE%\.config\telegram_sticker_maker\`（macOS / Linux 为 `~/.config/telegram_sticker_maker/`）。右侧「数据目录」可改到别的文件夹，代理缓存 `proxies/`、导入解压 `imports/` 也会跟过去。源文件被移动或删除的项会跳过。换电脑请仍用「导出」带走原片。
+会。任务、裁切、Emoji、关键词写在数据目录的 `session.json`。默认与设置文件一起：`%USERPROFILE%\.config\telegram_sticker_maker\`（macOS / Linux 为 `~/.config/telegram_sticker_maker/`）。右侧「数据目录」可选父文件夹，数据落在其中的 `telegram_sticker_maker\`（含 `proxies/`、`imports/`）。源文件被移动或删除的项会跳过。换电脑请仍用「导出」带走原片。
 
 **导入后缺文件**  
 「源文件 + JSON」依赖当时的绝对路径；换机器请用带原片的 zip / 文件夹导出。缺失项会跳过并写日志。

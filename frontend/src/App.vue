@@ -2035,14 +2035,14 @@ async function triggerAiTagAll() {
               💾 数据目录
             </h4>
             <p class="text-[10px] text-gray-500 leading-snug">
-              session、预览代理、导入解压缓存都放在这个文件夹。留空则用配置目录。
+              实际写入所选路径下的 <span class="font-mono">telegram_sticker_maker</span> 文件夹。留空则用配置目录。
             </p>
             <div class="flex items-center gap-2">
               <input
                 v-model="dataDir"
                 type="text"
                 :disabled="isBusy"
-                :placeholder="dataDirResolved || '默认配置目录'"
+                placeholder="选择父文件夹..."
                 @change="saveDataDir"
                 class="flex-1 bg-[#15171c] border border-[#282b35] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-[#24a1de]"
               />
@@ -2054,6 +2054,13 @@ async function triggerAiTagAll() {
                 浏览...
               </button>
             </div>
+            <p
+              v-if="dataDirResolved"
+              class="text-[10px] text-gray-500 font-mono truncate"
+              :title="dataDirResolved"
+            >
+              {{ dataDirResolved }}
+            </p>
             <div class="flex items-center gap-2">
               <button
                 @click="openDataDir"

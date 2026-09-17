@@ -15,6 +15,7 @@ from typing import Optional
 SESSION_FILENAME = "session.json"
 PROXIES_DIRNAME = "proxies"
 IMPORTS_DIRNAME = "imports"
+DATA_FOLDER_NAME = "telegram_sticker_maker"
 
 _CONFIG_DIR_OVERRIDE: Optional[str] = None
 _DATA_DIR_OVERRIDE: Optional[str] = None
@@ -50,6 +51,20 @@ def settings_ini_path() -> str:
     return os.path.join(config_dir(), "settings.ini")
 
 
+def resolve_custom_data_dir(raw: str) -> str:
+    """User picks a parent folder; data lives in ``<parent>/telegram_sticker_maker``."""
+    path = os.path.abspath(os.path.expanduser((raw or "").strip()))
+    if not path:
+        return config_dir()
+    if os.path.basename(path).lower() == DATA_FOLDER_NAME.lower():
+        return path
+    if os.path.isfile(os.path.join(path, SESSION_FILENAME)) or os.path.isdir(
+        os.path.join(path, PROXIES_DIRNAME)
+    ):
+        return path
+    return os.path.join(path, DATA_FOLDER_NAME)
+
+
 def _read_configured_data_dir() -> str:
     if _DATA_DIR_OVERRIDE:
         return _DATA_DIR_OVERRIDE
@@ -61,9 +76,9 @@ def _read_configured_data_dir() -> str:
         raw = ""
         if parser.has_section("settings") and parser.has_option("settings", "data_dir"):
             raw = parser.get("settings", "data_dir")
-        raw = os.path.expanduser((raw or "").strip())
+        raw = (raw or "").strip()
         if raw:
-            return os.path.abspath(raw)
+            return resolve_custom_data_dir(raw)
     return config_dir()
 
 
