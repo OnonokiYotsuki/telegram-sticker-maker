@@ -67,7 +67,8 @@ const logs = ref<string[]>([])
 const logContainer = ref<HTMLElement | null>(null)
 const streamBaseUrl = ref('')
 const activeClipTask = ref<TaskItem | null>(null)
-const keywordsTask = ref<TaskItem | null>(null)
+const keywordsTargets = ref<TaskItem[] | null>(null)
+const conversionIds = ref<number[] | null>(null)
 
 let nextTaskId = 1
 let sessionReady = false
@@ -145,16 +146,46 @@ function commitEmojiEdit(task: TaskItem) {
 }
 
 function openKeywordsModal(task: TaskItem) {
-  if (isBusy.value) return
-  keywordsTask.value = task
+  openKeywordsForTasks([task])
+}
+
+function openKeywordsForSelected() {
+  const targets = tasks.value.filter((t) => selectedTaskIds.value.has(t.taskId))
+  openKeywordsForTasks(targets.length ? targets : contextMenu.value.task ? [contextMenu.value.task] : [])
+}
+
+function openKeywordsForTasks(targets: TaskItem[]) {
+  if (isBusy.value || targets.length === 0) return
+  keywordsTargets.value = targets
 }
 
 function saveKeywords(value: string) {
-  if (keywordsTask.value) {
-    keywordsTask.value.keywords = value
+  if (keywordsTargets.value) {
+    for (const task of keywordsTargets.value) {
+      task.keywords = value
+    }
   }
-  keywordsTask.value = null
+  keywordsTargets.value = null
 }
+
+const keywordsModalSeed = computed(() => {
+  const list = keywordsTargets.value
+  if (!list?.length) return ''
+  const first = list[0].keywords || ''
+  return list.every((t) => (t.keywords || '') === first) ? first : ''
+})
+
+const keywordsModalFileName = computed(() => {
+  const list = keywordsTargets.value
+  if (!list?.length) return ''
+  if (list.length === 1) return list[0].mediaInfo.file_name
+  return `已选 ${list.length} 项贴纸`
+})
+
+const keywordsModalEmoji = computed(() => {
+  const list = keywordsTargets.value
+  return list?.length === 1 ? list[0].emoji : ''
+})
 
 function keywordsPreview(raw: string): string {
   const words = clampKeywordList(parseKeywords(raw))
@@ -203,12 +234,30 @@ const jobLabel = computed(() => {
   return ''
 })
 
+const conversionTargetTasks = computed(() => {
+  if (!conversionIds.value) return tasks.value
+  const ids = new Set(conversionIds.value)
+  return tasks.value.filter((t) => ids.has(t.taskId))
+})
+
+const conversionDoneCount = computed(
+  () => conversionTargetTasks.value.filter((t) => t.status === 'success' || t.status === 'failed').length,
+)
+
 const jobDone = computed(() =>
-  isImporting.value || isRestoring.value ? importDone.value : overallDone.value,
+  isImporting.value || isRestoring.value
+    ? importDone.value
+    : isConverting.value
+      ? conversionDoneCount.value
+      : overallDone.value,
 )
 
 const jobTotal = computed(() =>
-  isImporting.value || isRestoring.value ? importTotal.value : taskCounts.value.total,
+  isImporting.value || isRestoring.value
+    ? importTotal.value
+    : isConverting.value
+      ? conversionTargetTasks.value.length
+      : taskCounts.value.total,
 )
 
 const jobHint = computed(() => {
@@ -222,9 +271,10 @@ const overallProgress = computed(() => {
     if (!importTotal.value) return 0
     return Math.max(0, Math.min(100, Math.round((importDone.value / importTotal.value) * 100)))
   }
-  const total = tasks.value.length
+  const pool = isConverting.value ? conversionTargetTasks.value : tasks.value
+  const total = pool.length
   if (!total || !isBusy.value) return 0
-  const sum = tasks.value.reduce((acc, t) => acc + (t.progress || 0), 0)
+  const sum = pool.reduce((acc, t) => acc + (t.progress || 0), 0)
   return Math.max(0, Math.min(100, Math.round(sum / total)))
 })
 
@@ -242,7 +292,9 @@ const statusSummaryText = computed(() => {
     return `正在导出: ${overallDone.value} 完成 / 共 ${taskCounts.value.total} 项${hint}`
   }
   if (isConverting.value) {
-    return `正在转码: ${taskCounts.value.converting} 进行中, ${taskCounts.value.success} 完成 / 共 ${taskCounts.value.total} 项`
+    const converting = conversionTargetTasks.value.filter((t) => t.status === 'converting').length
+    const success = conversionTargetTasks.value.filter((t) => t.status === 'success').length
+    return `正在转码: ${converting} 进行中, ${success} 完成 / 共 ${conversionTargetTasks.value.length} 项`
   }
   if (taskCounts.value.total === 0) return '就绪'
   return `就绪: 共 ${taskCounts.value.total} 项 (${taskCounts.value.success} 完成, ${taskCounts.value.failed} 失败)`
@@ -284,10 +336,10 @@ watch(
 
 // --- API & IPC Setup ---
 function onKeyDown(e: KeyboardEvent) {
-  if (keywordsTask.value) {
+  if (keywordsTargets.value) {
     if (e.key === 'Escape') {
       e.preventDefault()
-      keywordsTask.value = null
+      keywordsTargets.value = null
     }
     return
   }
@@ -395,6 +447,7 @@ function setupIpcListeners() {
 
   window.onAllCompleted = () => {
     isConverting.value = false
+    conversionIds.value = null
     appendLog('🎉 批量转换已全部完成！')
   }
 
@@ -1249,12 +1302,17 @@ async function aiTagSingle(task: TaskItem) {
 }
 
 // --- Conversion Controls ---
-async function startConversion() {
-  if (tasks.value.length === 0 || isBusy.value) return
+async function startConversion(onlySelected = false) {
+  const targets =
+    onlySelected === true && selectedTaskIds.value.size > 0
+      ? tasks.value.filter((t) => selectedTaskIds.value.has(t.taskId))
+      : tasks.value
+  if (targets.length === 0 || isBusy.value) return
   updateAllTasksOutputPaths()
   isConverting.value = true
+  conversionIds.value = targets.map((t) => t.taskId)
 
-  const payload = tasks.value.map((t) => ({
+  const payload = targets.map((t) => ({
     task_id: t.taskId,
     input_path: t.inputPath,
     output_path: t.outputPath,
@@ -1280,7 +1338,13 @@ async function startConversion() {
   } catch (e) {
     appendLog(`❌ 启动转换失败: ${e}`)
     isConverting.value = false
+    conversionIds.value = null
   }
+}
+
+function convertSelectedFromMenu() {
+  contextMenu.value.visible = false
+  void startConversion(true)
 }
 
 async function cancelConversion() {
@@ -1941,7 +2005,7 @@ async function triggerAiTagAll() {
           </div>
           <div class="flex items-center gap-2">
             <button
-              @click="startConversion"
+              @click="startConversion()"
               :disabled="tasks.length === 0 || isBusy"
               class="flex-1 py-2.5 rounded-lg bg-[#24a1de] hover:bg-[#2eb5f7] active:bg-[#1d89be] text-white text-xs font-bold flex items-center justify-center gap-2 shadow-lg shadow-[#24a1de]/20 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
@@ -2068,6 +2132,27 @@ async function triggerAiTagAll() {
       data-skip-deselect
       class="fixed z-50 bg-[#16181d] border border-[#282b35] rounded-xl shadow-2xl p-1 text-xs text-gray-200 min-w-[170px] space-y-0.5 select-none"
     >
+      <button
+        :disabled="isBusy"
+        @click="convertSelectedFromMenu()"
+        :class="[
+          'w-full text-left px-3 py-2 rounded-lg flex items-center gap-2 transition',
+          isBusy ? 'opacity-40 cursor-not-allowed' : 'hover:bg-[#24a1de] hover:text-white cursor-pointer'
+        ]"
+      >
+        🚀 转换选中贴纸{{ selectedTaskIds.size > 1 ? ` (${selectedTaskIds.size})` : '' }}
+      </button>
+      <button
+        :disabled="isBusy"
+        @click="openKeywordsForSelected(); contextMenu.visible = false"
+        :class="[
+          'w-full text-left px-3 py-2 rounded-lg flex items-center gap-2 transition',
+          isBusy ? 'opacity-40 cursor-not-allowed' : 'hover:bg-[#24a1de] hover:text-white cursor-pointer'
+        ]"
+      >
+        🏷️ 设置选中贴纸的关键词{{ selectedTaskIds.size > 1 ? ` (${selectedTaskIds.size})` : '' }}
+      </button>
+
       <template v-if="selectedTaskIds.size > 1">
         <button
           @click="triggerAiTagAll(); contextMenu.visible = false"
@@ -2115,13 +2200,6 @@ async function triggerAiTagAll() {
           class="w-full text-left px-3 py-2 rounded-lg hover:bg-[#24a1de] hover:text-white flex items-center gap-2 transition cursor-pointer"
         >
           ✨ AI 识别此项 Emoji
-        </button>
-
-        <button
-          @click="openKeywordsModal(contextMenu.task!); contextMenu.visible = false"
-          class="w-full text-left px-3 py-2 rounded-lg hover:bg-[#24a1de] hover:text-white flex items-center gap-2 transition cursor-pointer"
-        >
-          🏷️ 编辑关键词
         </button>
 
         <button
@@ -2185,11 +2263,11 @@ async function triggerAiTagAll() {
     />
 
     <KeywordsModal
-      v-if="keywordsTask"
-      :keywords="keywordsTask.keywords"
-      :file-name="keywordsTask.mediaInfo.file_name"
-      :emoji="keywordsTask.emoji"
-      @close="keywordsTask = null"
+      v-if="keywordsTargets?.length"
+      :keywords="keywordsModalSeed"
+      :file-name="keywordsModalFileName"
+      :emoji="keywordsModalEmoji"
+      @close="keywordsTargets = null"
       @save="saveKeywords"
     />
   </div>
