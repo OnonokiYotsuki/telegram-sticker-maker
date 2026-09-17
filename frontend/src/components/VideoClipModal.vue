@@ -450,13 +450,16 @@
         <!-- Right Column: Clips Management List -->
         <div v-if="isVideo" class="w-80 border-l border-[#232731] bg-[#161822] flex flex-col">
           
-          <div class="px-4 py-3 border-b border-[#232731] flex items-center justify-between">
+          <div
+            class="px-4 py-3 border-b border-[#232731] flex items-center justify-between"
+            @click="clearClipSelection"
+          >
             <span class="font-bold text-xs text-slate-200">📋 待添加片段列表</span>
             <span class="text-xs text-slate-400">共 {{ clips.length }} 个片段</span>
           </div>
 
           <!-- Clips Table List -->
-          <div class="flex-1 overflow-y-auto p-2 space-y-2">
+          <div class="flex-1 overflow-y-auto p-2 space-y-2" @click="clearClipSelection">
             <div
               v-for="(clip, idx) in clips"
               :key="clip.id"
@@ -466,7 +469,7 @@
                   ? 'bg-[#1e2330] border-sky-500/60 shadow'
                   : 'bg-[#171922] border-[#252833] hover:border-slate-700'
               ]"
-              @click="selectClip(idx)"
+              @click.stop="selectClip(idx)"
               @contextmenu.prevent="onClipContextMenu($event, idx)"
             >
               <!-- Thumbnail -->
@@ -1540,6 +1543,12 @@ const selectClip = (idx: number) => {
   zoomToClip(curClip)
 }
 
+const clearClipSelection = () => {
+  if (selectedClipIdx.value < 0) return
+  selectedClipIdx.value = -1
+  stopClipPlayback()
+}
+
 const playClip = (idx: number, mode: 'once' | 'loop') => {
   if (clipPlayMode.value === mode && selectedClipIdx.value === idx && videoRef.value && !videoRef.value.paused) {
     videoRef.value.pause()
@@ -1679,6 +1688,9 @@ const confirmClips = () => {
     if (currentCrop.value) {
       curClip.crop = [...currentCrop.value]
       curClip.cropRadius = cropRadius.value
+    } else {
+      curClip.crop = undefined
+      curClip.cropRadius = 0
     }
     curClip.mirror = currentMirror.value
   }
