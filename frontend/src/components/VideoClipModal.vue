@@ -383,6 +383,16 @@
               </div>
 
               <div class="flex items-center shrink-0">
+                <select
+                  :value="String(playbackRate)"
+                  class="btn-subtle px-1.5 py-1 text-[11px] font-mono text-sky-300 outline-none cursor-pointer"
+                  title="播放倍速（, 减速 · . 加速）"
+                  @change="onPlaybackRateChange"
+                >
+                  <option v-for="r in PLAYBACK_RATES" :key="r" :value="String(r)">
+                    {{ formatPlaybackRate(r) }}
+                  </option>
+                </select>
                 <button
                   @click="toggleMute"
                   class="text-slate-400 hover:text-white text-base px-2"
@@ -765,6 +775,46 @@ const isPlaying = ref(false)
 const isMuted = ref(false)
 const currentTime = ref(0)
 const clipPlayMode = ref<'once' | 'loop' | null>(null)
+const PLAYBACK_RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4] as const
+const playbackRate = ref(1)
+
+function formatPlaybackRate(rate: number) {
+  return `${rate}×`
+}
+
+function snapPlaybackRate(rate: number) {
+  let best: number = PLAYBACK_RATES[0]
+  let bestDist = Math.abs(rate - best)
+  for (const r of PLAYBACK_RATES) {
+    const d = Math.abs(rate - r)
+    if (d < bestDist) {
+      best = r
+      bestDist = d
+    }
+  }
+  return best
+}
+
+function applyPlaybackRate() {
+  if (videoRef.value) videoRef.value.playbackRate = playbackRate.value
+}
+
+function setPlaybackRate(rate: number, persist = true) {
+  playbackRate.value = snapPlaybackRate(rate)
+  applyPlaybackRate()
+  if (persist) persistClipSettings()
+}
+
+function nudgePlaybackRate(dir: 1 | -1) {
+  const i = PLAYBACK_RATES.findIndex((r) => Math.abs(r - playbackRate.value) < 0.001)
+  const idx = i < 0 ? PLAYBACK_RATES.indexOf(1) : i
+  const next = PLAYBACK_RATES[Math.max(0, Math.min(PLAYBACK_RATES.length - 1, idx + dir))]
+  setPlaybackRate(next)
+}
+
+function onPlaybackRateChange(e: Event) {
+  setPlaybackRate(parseFloat((e.target as HTMLSelectElement).value))
+}
 
 const smallStep = ref(0.5)
 const largeStep = ref(5.0)
@@ -1120,6 +1170,7 @@ const isClipPlaying = (idx: number, mode: 'once' | 'loop') =>
 const togglePlay = () => {
   if (!videoRef.value) return
   if (videoRef.value.paused) {
+    applyPlaybackRate()
     videoRef.value.play()
   } else {
     videoRef.value.pause()
@@ -1361,6 +1412,7 @@ const onTimeUpdate = () => {
 const onLoadedMetadata = () => {
   if (!videoRef.value) return
   videoRef.value.volume = 0.5
+  applyPlaybackRate()
   const t = clips.value[selectedClipIdx.value]?.startTime
   if (t == null) return
   if (nativeRangeSeek.value) {
@@ -1377,6 +1429,7 @@ const onCanPlay = () => {
     pendingProxySeek = null
     videoRef.value.currentTime = t
   }
+  applyPlaybackRate()
   if (!isReloading.value) return
   isReloading.value = false
   if (pendingPlay.value && videoRef.value) {
@@ -1604,6 +1657,7 @@ const playClip = (idx: number, mode: 'once' | 'loop') => {
   pendingPlay.value = true
   clipPlayMode.value = mode
   selectClip(idx)
+  applyPlaybackRate()
   if (nativeRangeSeek.value) videoRef.value?.play()
 }
 
@@ -1696,6 +1750,7 @@ const resetClipSettings = () => {
   defaultCropAspect.value = '1:1'
   defaultCropRadius.value = 0
   showOverview.value = true
+  setPlaybackRate(1, false)
 }
 
 function persistClipSettings() {
@@ -1706,6 +1761,7 @@ function persistClipSettings() {
       default_crop_aspect: defaultCropAspect.value,
       default_crop_radius: defaultCropRadius.value,
       show_timeline_overview: showOverview.value,
+      playback_rate: playbackRate.value,
     })
   }
 }
@@ -1754,7 +1810,11 @@ const onKeyDown = (e: KeyboardEvent) => {
   }
 
   if (showClipSettings.value) return
-  if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+  if (
+    e.target instanceof HTMLInputElement
+    || e.target instanceof HTMLTextAreaElement
+    || e.target instanceof HTMLSelectElement
+  ) return
 
   if (e.key === 'm' || e.key === 'M') {
     if (!hasSelectedClip.value) return
@@ -1768,6 +1828,12 @@ const onKeyDown = (e: KeyboardEvent) => {
   if (e.code === 'Space') {
     e.preventDefault()
     togglePlay()
+  } else if (e.key === ',' || e.key === '<') {
+    e.preventDefault()
+    nudgePlaybackRate(-1)
+  } else if (e.key === '.' || e.key === '>') {
+    e.preventDefault()
+    nudgePlaybackRate(1)
   } else if (e.key === '[') {
     if (!hasSelectedClip.value) return
     e.preventDefault()
@@ -1874,6 +1940,7 @@ onMounted(() => {
       if (st.default_crop_aspect) defaultCropAspect.value = st.default_crop_aspect
       if (st.default_crop_radius != null) defaultCropRadius.value = clampCropRadius(st.default_crop_radius)
       if (st.show_timeline_overview != null) showOverview.value = !!st.show_timeline_overview
+      if (st.playback_rate != null) setPlaybackRate(Number(st.playback_rate), false)
       if (!props.initialCrop && !reopenedGroup) {
         aspectMode.value = defaultCropAspect.value
       }

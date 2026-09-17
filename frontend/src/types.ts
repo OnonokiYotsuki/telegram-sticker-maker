@@ -64,6 +64,8 @@ export interface AppSettings extends GlobalOptions {
   large_step_sec?: number
   default_crop_aspect?: string
   default_crop_radius?: number
+  show_timeline_overview?: boolean
+  playback_rate?: number
   ai_base_url?: string
   ai_model?: string
   ai_api_key?: string
