@@ -66,6 +66,11 @@ export interface AppSettings extends GlobalOptions {
   default_crop_radius?: number
   show_timeline_overview?: boolean
   playback_rate?: number
+  data_dir?: string
+  data_dir_resolved?: string
+  session_path?: string
+  proxy_dir?: string
+  import_dir?: string
   ai_base_url?: string
   ai_model?: string
   ai_api_key?: string

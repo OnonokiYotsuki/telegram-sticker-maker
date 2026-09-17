@@ -42,6 +42,8 @@ const globalOptions = ref<GlobalOptions>({
   custom_output_dir: '',
 })
 const proxyCacheHint = ref('')
+const dataDir = ref('')
+const dataDirResolved = ref('')
 
 const isConverting = ref(false)
 const isExporting = ref(false)
@@ -520,6 +522,8 @@ async function bootApi() {
       globalOptions.value.same_dir = settings.same_dir ?? false
       globalOptions.value.pack_output = settings.pack_output ?? true
       globalOptions.value.custom_output_dir = settings.custom_output_dir || ''
+      dataDir.value = settings.data_dir || ''
+      dataDirResolved.value = settings.data_dir_resolved || ''
     }
     if (api.get_proxy_cache_info) {
       try {
@@ -1258,6 +1262,49 @@ async function clearProxyCache() {
   }
 }
 
+async function refreshDataDirFromSettings() {
+  const api = window.pywebview?.api
+  if (!api?.get_settings) return
+  try {
+    const settings = await api.get_settings()
+    dataDir.value = settings.data_dir || ''
+    dataDirResolved.value = settings.data_dir_resolved || ''
+  } catch {
+    /* keep current */
+  }
+}
+
+async function saveDataDir() {
+  const api = window.pywebview?.api
+  if (!api?.save_settings) return
+  try {
+    await api.save_settings({ data_dir: dataDir.value.trim() })
+    await refreshDataDirFromSettings()
+    lastSessionJson = ''
+    persistSession(true)
+    await refreshProxyCacheHint()
+    if (dataDirResolved.value) {
+      appendLog(`数据目录: ${dataDirResolved.value}`)
+    }
+  } catch (e) {
+    console.error('Failed to save data dir:', e)
+  }
+}
+
+async function selectDataDir() {
+  if (window.pywebview?.api?.select_directory) {
+    const dir = await window.pywebview.api.select_directory()
+    if (dir) {
+      dataDir.value = dir
+      await saveDataDir()
+    }
+  }
+}
+
+function openDataDir() {
+  openFolder(dataDirResolved.value || dataDir.value)
+}
+
 async function saveCurrentSettings() {
   if (window.pywebview?.api?.save_settings) {
     try {
@@ -1985,9 +2032,35 @@ async function triggerAiTagAll() {
 
           <div class="space-y-1.5">
             <h4 class="text-xs font-bold text-white flex items-center gap-1.5">
-              🎞️ 预览代理
+              💾 数据目录
             </h4>
+            <p class="text-[10px] text-gray-500 leading-snug">
+              session、预览代理、导入解压缓存都放在这个文件夹。留空则用配置目录。
+            </p>
             <div class="flex items-center gap-2">
+              <input
+                v-model="dataDir"
+                type="text"
+                :disabled="isBusy"
+                :placeholder="dataDirResolved || '默认配置目录'"
+                @change="saveDataDir"
+                class="flex-1 bg-[#15171c] border border-[#282b35] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-[#24a1de]"
+              />
+              <button
+                :disabled="isBusy"
+                @click="selectDataDir"
+                class="px-2.5 py-1.5 bg-[#242730] hover:bg-[#2e333e] border border-[#333844] rounded-lg text-gray-200 text-xs font-medium cursor-pointer disabled:opacity-40"
+              >
+                浏览...
+              </button>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                @click="openDataDir"
+                class="px-2.5 py-1.5 bg-[#242730] hover:bg-[#2e333e] border border-[#333844] rounded-lg text-gray-200 text-xs font-medium cursor-pointer"
+              >
+                打开文件夹
+              </button>
               <button
                 @click="clearProxyCache"
                 class="px-2.5 py-1.5 bg-[#242730] hover:bg-[#2e333e] border border-[#333844] rounded-lg text-gray-200 text-xs font-medium cursor-pointer"

@@ -276,9 +276,19 @@ class AppAPI:
 
     def get_settings(self) -> Dict[str, Any]:
         try:
-            return load_app_settings()
+            loaded = load_app_settings()
         except (OSError, ValueError):
-            return default_settings()
+            loaded = default_settings()
+        try:
+            from core.app_paths import data_dir, import_dir, proxy_dir, session_file
+
+            loaded["data_dir_resolved"] = data_dir()
+            loaded["session_path"] = session_file()
+            loaded["proxy_dir"] = proxy_dir()
+            loaded["import_dir"] = import_dir()
+        except OSError:
+            pass
+        return loaded
 
     def ai_tag_single(
         self,

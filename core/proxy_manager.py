@@ -5,7 +5,6 @@ import hashlib
 import os
 import shutil
 import subprocess
-import tempfile
 import threading
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -20,12 +19,13 @@ _ENCODER_DETECT_LOCK = threading.Lock()
 
 
 def get_proxy_cache_dir() -> str:
-    global _PROXY_CACHE_DIR
-    if _PROXY_CACHE_DIR is None:
-        target = os.path.join(tempfile.gettempdir(), "tg_sticker_maker_proxies")
-        os.makedirs(target, exist_ok=True)
-        _PROXY_CACHE_DIR = target
-    return _PROXY_CACHE_DIR
+    if _PROXY_CACHE_DIR is not None:
+        return _PROXY_CACHE_DIR
+    from core.app_paths import proxy_dir
+
+    target = proxy_dir()
+    os.makedirs(target, exist_ok=True)
+    return target
 
 
 def set_proxy_cache_dir(path: Optional[str]) -> None:

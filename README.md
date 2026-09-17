@@ -141,7 +141,7 @@ uv run pytest
 
 ## 截取预览
 
-截取窗口铺满整个应用。MP4 / WebM 走 HTTP Range 直出，拖进度不卡。MKV 等浏览器不好快进的格式，可点右上角 **缓存代理**：生成 480p H.264 代理并缓存在系统临时目录（`tg_sticker_maker_proxies`）。导出贴纸列表时会带上已有代理，导入后自动装回缓存。右侧「预览代理」可查看占用并一键清除。
+截取窗口铺满整个应用。MP4 / WebM 走 HTTP Range 直出，拖进度不卡。MKV 等浏览器不好快进的格式，可点右上角 **缓存代理**：生成 480p H.264 代理。缓存、导入解压与 session 同在数据目录（默认配置目录下的 `proxies/`、`imports/`、`session.json`），可在右侧指定路径。导出贴纸列表时会带上已有代理，导入后写回该缓存。
 
 时间轴：
 
@@ -169,6 +169,8 @@ uv run pytest
 ```
 
 （Windows 即 `%USERPROFILE%\.config\telegram_sticker_maker\`）
+
+session、预览代理、导入解压默认也在该目录（`session.json`、`proxies/`、`imports/`）。右侧「数据目录」可改到其它文件夹；`settings.ini` 仍留在上面的配置目录，用来记住这个路径。
 
 提示词偏向聊天表情（😂😭😡🥺 等），避免装饰性符号。识别失败时留空，可手动填写。右键任务可对选中项批量识别、转换，或统一设置关键词。
 
@@ -240,6 +242,7 @@ sticker_maker/
 │   ├── crop_shape.py
 │   ├── pack_output.py       # ZIP / 时间戳文件夹 + stickers.json
 │   ├── sticker_list.py      # 贴纸列表导出 / 导入（不转码）
+│   ├── app_paths.py         # 配置目录 / 可指定的数据目录
 │   ├── session_store.py     # 关闭后再开的任务进度
 │   ├── proxy_manager.py     # 480p 预览代理缓存
 │   ├── ai_tagger.py
@@ -272,13 +275,13 @@ FFmpeg 未装，或新开的终端还没刷新 `PATH`。装完重开终端，再
 超长、高运动、带透明的片段更难。缩短裁切、改用「自定义表情」以外的 512 规格、或选「快速导出」以外的预设再试。回退最多 4 轮，仍超限会失败。
 
 **MKV 预览拖进度卡顿**  
-在截取窗口点「缓存代理」，等 480p 代理生成后再拖。缓存可在右侧「清除预览缓存」删掉。
+在截取窗口点「缓存代理」，等 480p 代理生成后再拖。缓存在数据目录的 `proxies/`，可在右侧清除。
 
 **AI 一直失败**  
 检查 Base URL 是否带 `/v1`、模型是否支持 vision、密钥是否有效。
 
 **关掉再开，上次的列表还在吗**  
-会。任务、裁切、Emoji、关键词会写到 `%USERPROFILE%\.config\telegram_sticker_maker\session.json`（macOS / Linux 为 `~/.config/telegram_sticker_maker/`）。源文件被移动或删除的项会跳过。换电脑请仍用「导出」带走原片。
+会。任务、裁切、Emoji、关键词写在数据目录的 `session.json`。默认与设置文件一起：`%USERPROFILE%\.config\telegram_sticker_maker\`（macOS / Linux 为 `~/.config/telegram_sticker_maker/`）。右侧「数据目录」可改到别的文件夹，代理缓存 `proxies/`、导入解压 `imports/` 也会跟过去。源文件被移动或删除的项会跳过。换电脑请仍用「导出」带走原片。
 
 **导入后缺文件**  
 「源文件 + JSON」依赖当时的绝对路径；换机器请用带原片的 zip / 文件夹导出。缺失项会跳过并写日志。

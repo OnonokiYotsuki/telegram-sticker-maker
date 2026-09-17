@@ -5,14 +5,12 @@ import json
 import os
 from typing import Any, Iterable, Mapping
 
-from core.ai_tagger import AIEmojiConfig
+from core.app_paths import session_file
 from core.sticker_list import build_sticker_list_document, _normalize_list_item
-
-SESSION_FILENAME = "session.json"
 
 
 def session_path() -> str:
-    return os.path.join(AIEmojiConfig.get_config_dir(), SESSION_FILENAME)
+    return session_file()
 
 
 def save_session(stickers: Iterable[Mapping[str, Any]], path: str | None = None) -> dict[str, Any]:

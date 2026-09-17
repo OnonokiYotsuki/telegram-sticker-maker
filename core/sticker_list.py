@@ -649,7 +649,9 @@ def looks_like_import_path(path: str) -> bool:
 
 
 def _import_cache_root() -> str:
-    return os.path.join(tempfile.gettempdir(), "tg_sticker_maker_imports")
+    from core.app_paths import import_dir
+
+    return import_dir()
 
 
 def extract_zip_for_import(zip_path: str) -> str:
