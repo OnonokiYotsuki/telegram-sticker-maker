@@ -43,6 +43,7 @@ class PlanOptions(Protocol):
     end_time: Optional[float]
     crop: Optional[tuple[int, int, int, int]]
     crop_radius: float
+    mirror: bool
 
 
 @dataclass
@@ -186,9 +187,12 @@ def build_vf(
     source_fps: float,
     crop: Optional[tuple[int, int, int, int]] = None,
     crop_radius: float = 0.0,
+    mirror: bool = False,
 ) -> str:
     flags = "lanczos+accurate_rnd+full_chroma_int"
     filters = []
+    if mirror:
+        filters.append("hflip")
     if crop is not None:
         cx, cy, cw, ch = crop
         cw = max(2, cw - (cw % 2))
@@ -282,6 +286,7 @@ def plan_video(
     has_alpha = info.has_alpha or radius_needs_alpha(crop_radius)
     pix_fmt = "yuva420p" if has_alpha else "yuv420p"
     auto_alt_ref = 0 if has_alpha else 1
+    mirror = bool(getattr(options, "mirror", False))
 
     vf = build_vf(
         is_emoji=is_emoji,
@@ -290,6 +295,7 @@ def plan_video(
         source_fps=source_fps,
         crop=crop,
         crop_radius=crop_radius,
+        mirror=mirror,
     )
 
     motion_tag = "未测运动"

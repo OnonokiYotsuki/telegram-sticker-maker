@@ -38,6 +38,7 @@ export interface TaskItem {
   endTime?: number
   crop?: [number, number, number, number]
   cropRadius?: number
+  mirror?: boolean
   clipGroupId?: string
   clipId?: string
   status: 'waiting' | 'converting' | 'success' | 'failed'
@@ -97,6 +98,7 @@ export interface AppAPI {
     crop?: string | null,
     size?: number,
     radius?: number | null,
+    mirror?: boolean,
   ) => Promise<string>
   start_conversion: (tasks: Record<string, unknown>[], global_options: Record<string, unknown>) => Promise<{ status: string }>
   export_sticker_list: (
@@ -147,6 +149,7 @@ export interface ImportedSticker {
   end_time?: number
   crop?: [number, number, number, number]
   crop_radius?: number
+  mirror?: boolean
   clip_group_id?: string
   clip_id?: string
   clip_label?: string
@@ -161,6 +164,7 @@ export interface ClipItem {
   keywords?: string
   crop?: [number, number, number, number]
   cropRadius?: number
+  mirror?: boolean
 }
 
 declare global {

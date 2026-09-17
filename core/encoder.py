@@ -33,6 +33,7 @@ class EncodeOptions:
     end_time: Optional[float] = None  # clip end offset in seconds
     crop: Optional[tuple[int, int, int, int]] = None  # (crop_x, crop_y, crop_w, crop_h)
     crop_radius: float = 0.0  # 0 = rectangle, 1 = circle / pill
+    mirror: bool = False  # horizontal flip (hflip)
 
 
 def mean_luma_sad(prev: bytes, cur: bytes, width: int, height: int) -> float:
@@ -135,6 +136,9 @@ class StickerEncoder:
                 cx = max(0, cx - (cx % 2))
                 cy = max(0, cy - (cy % 2))
                 scale_filter = f"crop={cw}:{ch}:{cx}:{cy}," + scale_filter
+
+            if options.mirror:
+                scale_filter = "hflip," + scale_filter
 
             mask = build_radius_mask_filter(normalize_crop_radius(options.crop_radius))
             if mask:
@@ -260,19 +264,22 @@ class StickerEncoder:
         duration: float,
         start_time: Optional[float] = None,
         crop: Optional[tuple[int, int, int, int]] = None,
+        mirror: bool = False,
     ) -> Optional[float]:
         """Mean |Δ luma|/255 on ~16 gray 160x90 frames. None on failure."""
         ffmpeg = cls.get_ffmpeg_path()
         sample_fps = max(0.5, min(8.0, 16.0 / max(duration, 0.5)))
         width, height = 160, 90
         crop_filter = ""
+        if mirror:
+            crop_filter += "hflip,"
         if crop is not None:
             cx, cy, cw, ch = crop
             cw = max(2, cw - (cw % 2))
             ch = max(2, ch - (ch % 2))
             cx = max(0, cx - (cx % 2))
             cy = max(0, cy - (cy % 2))
-            crop_filter = f"crop={cw}:{ch}:{cx}:{cy},"
+            crop_filter += f"crop={cw}:{ch}:{cx}:{cy},"
         vf = (
             f"{crop_filter}scale={width}:{height}:force_original_aspect_ratio=decrease,"
             f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
@@ -475,6 +482,7 @@ class StickerEncoder:
                 real_duration,
                 start_time=start_time if is_clip else None,
                 crop=options.crop,
+                mirror=options.mirror,
             )
 
         plan = plan_video(info, options, motion_score=motion_score)
@@ -527,6 +535,7 @@ class StickerEncoder:
                                 source_fps=plan.source_fps,
                                 crop=options.crop,
                                 crop_radius=options.crop_radius,
+                                mirror=options.mirror,
                             ),
                             bitrate_kbps=min(plan.bitrate_kbps, new_kbps),
                             crf=None,

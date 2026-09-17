@@ -259,6 +259,7 @@ class AppAPI:
         crop: Optional[str] = None,
         size: int = 80,
         radius: Optional[float] = None,
+        mirror: bool = False,
     ) -> str:
         encoded = urllib.parse.quote(file_path)
         url = f"/thumbnail?path={encoded}&t={t:.3f}&size={size}"
@@ -266,6 +267,8 @@ class AppAPI:
             url += f"&crop={crop}"
         if radius:
             url += f"&radius={radius}"
+        if mirror:
+            url += "&mirror=1"
         return self.stream_server.get_url(url)
 
     def get_settings(self) -> Dict[str, Any]:
@@ -840,6 +843,7 @@ class AppAPI:
         if crop and isinstance(crop, list) and len(crop) == 4:
             crop = tuple(crop)
         crop_radius = task.get("crop_radius") or 0.0
+        mirror = bool(task.get("mirror", False))
 
         opts = EncodeOptions(
             preset_style=preset_style,
@@ -850,6 +854,7 @@ class AppAPI:
             end_time=end_t,
             crop=crop,
             crop_radius=crop_radius,
+            mirror=mirror,
         )
 
         os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)

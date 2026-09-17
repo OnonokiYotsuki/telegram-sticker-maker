@@ -36,3 +36,26 @@ def test_static_sticker_conversion(sample_image, tmp_path):
     # One side must be 512px, the other <= 512px
     assert max(info.width, info.height) == 512
     assert min(info.width, info.height) <= 512
+
+
+def test_static_sticker_mirror(tmp_path):
+    # Left half red, right half blue
+    img = Image.new("RGBA", (200, 200), (255, 0, 0, 255))
+    for x in range(100, 200):
+        for y in range(200):
+            img.putpixel((x, y), (0, 0, 255, 255))
+    src = str(tmp_path / "halves.png")
+    img.save(src)
+
+    out = str(tmp_path / "mirrored.webp")
+    success = StickerEncoder.convert(src, out, EncodeOptions(mirror=True))
+    assert success is True
+    assert os.path.exists(out)
+
+    with Image.open(out) as res:
+        res = res.convert("RGB")
+        # After horizontal flip, left should be blue, right should be red
+        left_pixel = res.getpixel((20, 20))
+        right_pixel = res.getpixel((res.width - 20, 20))
+        assert left_pixel[2] > 200  # Blue
+        assert right_pixel[0] > 200  # Red

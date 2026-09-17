@@ -115,6 +115,8 @@ def build_sticker_list_document(
         radius = _as_optional_float(raw.get("crop_radius"))
         if radius is not None and radius > 0.001:
             item["crop_radius"] = max(0.0, min(1.0, radius))
+        if bool(raw.get("mirror")):
+            item["mirror"] = True
         for key in ("clip_group_id", "clip_id", "clip_label"):
             val = str(raw.get(key) or "").strip()
             if val:
@@ -255,13 +257,14 @@ def prepared_output_ext(
     is_video: bool,
     crop: Optional[list[int]],
     radius: float,
+    mirror: bool = False,
 ) -> str:
     orig = os.path.splitext(src)[1] or ".bin"
     if is_video:
-        if crop and normalize_crop_radius(radius) > 0.001:
+        if (crop and normalize_crop_radius(radius) > 0.001) or mirror:
             return ".webm"
         return orig
-    if not crop:
+    if not crop and not mirror:
         return orig
     if normalize_crop_radius(radius) > 0.001:
         return ".png"
@@ -301,6 +304,7 @@ def extract_source_clip(
     duration: Optional[float] = None,
     crop: Optional[list[int]] = None,
     crop_radius: float = 0.0,
+    mirror: bool = False,
 ) -> None:
     """Cut/copy a clip. Applies crop shape when given (requires a light encode)."""
     src = os.path.abspath(input_path)
@@ -308,9 +312,9 @@ def extract_source_clip(
     if not os.path.isfile(src):
         raise StickerListError(f"源文件不存在: {src}")
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
-    if src == dest and not crop:
+    if src == dest and not crop and not mirror:
         return
-    if crop:
+    if crop or mirror:
         if is_video:
             _extract_video_with_crop(
                 src,
@@ -319,9 +323,10 @@ def extract_source_clip(
                 end_time=end_time,
                 crop=crop,
                 crop_radius=crop_radius,
+                mirror=mirror,
             )
         else:
-            _extract_image_with_crop(src, dest, crop=crop, crop_radius=crop_radius)
+            _extract_image_with_crop(src, dest, crop=crop, crop_radius=crop_radius, mirror=mirror)
         return
     if should_copy_whole_file(is_video, start_time, end_time, duration):
         if src != dest:
@@ -357,25 +362,31 @@ def extract_source_clip(
 def _extract_image_with_crop(
     src: str,
     dest: str,
-    crop: list[int],
+    *,
+    crop: Optional[list[int]],
     crop_radius: float,
+    mirror: bool = False,
 ) -> None:
-    cx, cy, cw, ch = _normalized_crop(crop)
     with Image.open(src) as img:
-        w, h = img.size
-        right = min(w, cx + cw)
-        bottom = min(h, cy + ch)
-        left = min(max(0, cx), max(0, right - 2))
-        top = min(max(0, cy), max(0, bottom - 2))
-        cropped = img.crop((left, top, right, bottom))
+        if mirror:
+            from PIL import ImageOps
+            img = ImageOps.mirror(img)
+        if crop:
+            cx, cy, cw, ch = _normalized_crop(crop)
+            w, h = img.size
+            right = min(w, cx + cw)
+            bottom = min(h, cy + ch)
+            left = min(max(0, cx), max(0, right - 2))
+            top = min(max(0, cy), max(0, bottom - 2))
+            img = img.crop((left, top, right, bottom))
         if normalize_crop_radius(crop_radius) > 0.001:
-            cropped = apply_crop_radius(cropped, crop_radius)
+            img = apply_crop_radius(img, crop_radius)
         ext = os.path.splitext(dest)[1].lower()
         save_kw: dict[str, Any] = {}
         if ext in {".jpg", ".jpeg"}:
-            cropped = cropped.convert("RGB")
+            img = img.convert("RGB")
             save_kw["quality"] = 95
-        cropped.save(dest, **save_kw)
+        img.save(dest, **save_kw)
     if not os.path.isfile(dest) or os.path.getsize(dest) == 0:
         raise StickerListError("裁切图片失败")
 
@@ -386,15 +397,21 @@ def _extract_video_with_crop(
     *,
     start_time: Optional[float],
     end_time: Optional[float],
-    crop: list[int],
+    crop: Optional[list[int]],
     crop_radius: float,
+    mirror: bool = False,
 ) -> None:
-    cx, cy, cw, ch = _normalized_crop(crop)
-    vf = f"crop={cw}:{ch}:{cx}:{cy}"
+    filters = []
+    if mirror:
+        filters.append("hflip")
+    if crop:
+        cx, cy, cw, ch = _normalized_crop(crop)
+        filters.append(f"crop={cw}:{ch}:{cx}:{cy}")
     radius = normalize_crop_radius(crop_radius)
     mask = build_radius_mask_filter(radius)
     if mask:
-        vf = f"{vf},{mask}"
+        filters.append(mask)
+    vf = ",".join(filters)
     start = float(start_time or 0)
     end = float(end_time) if end_time is not None else None
     clip_dur = (end - start) if end is not None and end > start else None
@@ -405,7 +422,9 @@ def _extract_video_with_crop(
     cmd += ["-i", src]
     if clip_dur is not None:
         cmd += ["-t", f"{clip_dur:.3f}"]
-    cmd += ["-vf", vf, "-an", "-sn", "-dn", "-map_metadata", "-1"]
+    if vf:
+        cmd += ["-vf", vf]
+    cmd += ["-an", "-sn", "-dn", "-map_metadata", "-1"]
     ext = os.path.splitext(dest)[1].lower()
     if mask and ext in {".webm", ".mkv"}:
         cmd += [
@@ -468,7 +487,8 @@ def export_prepared_stickers(
         is_video = bool(raw.get("is_video", True))
         crop = _as_crop(raw.get("crop"))
         radius = _as_optional_float(raw.get("crop_radius")) or 0.0
-        ext = prepared_output_ext(src, is_video=is_video, crop=crop, radius=radius)
+        mirror = bool(raw.get("mirror"))
+        ext = prepared_output_ext(src, is_video=is_video, crop=crop, radius=radius, mirror=mirror)
         name = unique_arcname(format_prepared_name(index, emoji, ext), used)
         out_path = os.path.join(root, name)
         try:
@@ -481,6 +501,7 @@ def export_prepared_stickers(
                 duration=_as_optional_float(raw.get("duration")),
                 crop=crop,
                 crop_radius=radius,
+                mirror=mirror,
             )
         except Exception as exc:
             if progress_callback:
@@ -627,6 +648,8 @@ def _normalize_list_item(raw: Mapping[str, Any], root: str) -> Optional[dict[str
     radius = _as_optional_float(raw.get("crop_radius"))
     if radius is not None and radius > 0.001:
         item["crop_radius"] = max(0.0, min(1.0, radius))
+    if bool(raw.get("mirror")):
+        item["mirror"] = True
     for key in ("clip_group_id", "clip_id", "clip_label"):
         val = str(raw.get(key) or "").strip()
         if val:
@@ -647,6 +670,8 @@ def _normalize_pack_item(raw: Mapping[str, Any], root: str) -> Optional[dict[str
     radius = _as_optional_float(raw.get("crop_radius"))
     if radius is not None and radius > 0.001:
         item["crop_radius"] = max(0.0, min(1.0, radius))
+    if bool(raw.get("mirror")):
+        item["mirror"] = True
     return item
 
 

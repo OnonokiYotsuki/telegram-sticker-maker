@@ -65,6 +65,7 @@
               ref="videoRef"
               :src="streamUrl"
               class="absolute inset-0 w-full h-full object-contain pointer-events-auto"
+              :style="currentMirror ? { transform: 'scaleX(-1)' } : undefined"
               @timeupdate="onTimeUpdate"
               @loadedmetadata="onLoadedMetadata"
               @canplay="onCanPlay"
@@ -77,6 +78,7 @@
               v-else
               :src="imagePreviewUrl"
               class="absolute inset-0 w-full h-full object-contain pointer-events-none"
+              :style="currentMirror ? { transform: 'scaleX(-1)' } : undefined"
               alt="裁切预览"
             />
 
@@ -237,16 +239,29 @@
             </div>
 
             <div v-if="!isVideo" class="flex items-center justify-between pt-1">
-              <button
-                @click="toggleCrop"
-                :class="[
-                  'px-3 py-1 rounded font-semibold transition text-xs',
-                  cropActive ? 'bg-sky-500 hover:bg-sky-400 text-white' : 'btn-subtle text-sky-400'
-                ]"
-                title="开启/关闭画面裁切框"
-              >
-                ✂️ 画面裁切
-              </button>
+              <div class="flex items-center space-x-1.5 text-xs">
+                <button
+                  @click="toggleCrop"
+                  :class="[
+                    'px-3 py-1 rounded font-semibold transition text-xs',
+                    cropActive ? 'bg-sky-500 hover:bg-sky-400 text-white' : 'btn-subtle text-sky-400'
+                  ]"
+                  title="开启/关闭画面裁切框"
+                >
+                  ✂️ 画面裁切
+                </button>
+                <button
+                  type="button"
+                  @click="toggleMirror"
+                  :class="[
+                    'px-3 py-1 rounded font-semibold transition flex items-center space-x-1',
+                    currentMirror ? 'bg-amber-500 hover:bg-amber-400 text-white' : 'btn-subtle text-amber-400'
+                  ]"
+                  :title="currentMirror ? '已开启镜像翻转 (快捷键 M)' : '镜像翻转画面 (快捷键 M)'"
+                >
+                  <span>🪞 镜像</span>
+                </button>
+              </div>
               <button
                 @click="showClipSettings = true"
                 class="btn-subtle px-2 py-1 text-xs"
@@ -332,6 +347,19 @@
                 >
                   ✂️ 画面裁切
                 </button>
+
+                <!-- Mirror Toggle -->
+                <button
+                  type="button"
+                  @click="toggleMirror"
+                  :class="[
+                    'px-3 py-1 rounded font-semibold transition flex items-center space-x-1',
+                    currentMirror ? 'bg-amber-500 hover:bg-amber-400 text-white' : 'btn-subtle text-amber-400'
+                  ]"
+                  :title="currentMirror ? '已开启镜像翻转 (快捷键 M)' : '镜像翻转画面 (快捷键 M)'"
+                >
+                  <span>🪞 镜像</span>
+                </button>
               </div>
 
               <div class="flex items-center shrink-0">
@@ -382,6 +410,7 @@
                   >
                     📐 同步形状
                   </button>
+
                 </div>
 
                 <div class="font-mono text-sky-400 font-semibold">
@@ -463,6 +492,9 @@
                 </div>
                 <div class="text-[11px] text-slate-400 flex items-center space-x-2">
                   <span class="font-semibold text-slate-300">{{ clipDurationLabel(clip) }}</span>
+                  <span v-if="clip.mirror" class="text-amber-400 font-mono text-[10px] bg-amber-950/60 px-1 rounded border border-amber-800/40">
+                    🪞 镜像
+                  </span>
                   <span v-if="clip.crop" class="text-sky-400 font-mono text-[10px] bg-sky-950/60 px-1 rounded border border-sky-800/40">
                     [✂️ {{ cropRadiusLabel(clip.cropRadius) }} {{ clip.crop[2] }}×{{ clip.crop[3] }}]
                   </span>
@@ -471,6 +503,19 @@
 
               <!-- Actions -->
               <div class="flex flex-col space-y-1">
+                <button
+                  type="button"
+                  @click.stop="toggleClipMirror(idx)"
+                  :class="[
+                    'p-1 rounded text-xs transition',
+                    clip.mirror
+                      ? 'text-amber-400 bg-amber-950/60 hover:bg-amber-900/60'
+                      : 'text-slate-400 hover:text-amber-400 hover:bg-slate-800'
+                  ]"
+                  :title="clip.mirror ? '取消此片段镜像' : '为此片段开启镜像'"
+                >
+                  🪞
+                </button>
                 <button
                   @click.stop="playClip(idx, 'once')"
                   :class="[
@@ -638,6 +683,7 @@ const props = defineProps<{
   initialEndTime?: number
   initialCrop?: [number, number, number, number]
   initialCropRadius?: number
+  initialMirror?: boolean
   initialEmoji?: string
   initialClips?: ClipItem[]
   initialClipIndex?: number
@@ -685,6 +731,7 @@ function resolveInitialClips(): ClipItem[] {
       keywords: c.keywords,
       crop: c.crop,
       cropRadius: clampCropRadius(c.cropRadius),
+      mirror: !!c.mirror,
     }))
   }
   const start = props.initialStartTime ?? 0
@@ -698,6 +745,7 @@ function resolveInitialClips(): ClipItem[] {
       emoji: props.initialEmoji ?? '',
       crop: props.initialCrop,
       cropRadius: clampCropRadius(props.initialCropRadius),
+      mirror: !!props.initialMirror,
     },
   ]
 }
@@ -714,6 +762,7 @@ const cropRadius = ref(clampCropRadius(focusedInit?.cropRadius ?? props.initialC
 const currentCrop = ref<[number, number, number, number] | null>(
   focusedInit?.crop || props.initialCrop || null,
 )
+const currentMirror = ref(!!focusedInit?.mirror || !!props.initialMirror)
 
 const hoverTime = ref<number | null>(null)
 const showOverview = ref(true)
@@ -1396,7 +1445,42 @@ const setCurrentAsEnd = () => {
   curClip.duration = curClip.endTime - curClip.startTime
 }
 
+const toggleMirror = () => {
+  currentMirror.value = !currentMirror.value
+  const curClip = clips.value[selectedClipIdx.value]
+  if (curClip) {
+    curClip.mirror = currentMirror.value
+    if (curClip.crop) {
+      const vw = Math.max(16, props.mediaInfo.width)
+      const [cx, cy, cw, ch] = curClip.crop
+      const newCx = Math.max(0, Math.min(vw - cw, vw - cx - cw))
+      curClip.crop = [newCx, cy, cw, ch]
+      currentCrop.value = [...curClip.crop]
+    }
+    refreshThumbnail(curClip)
+  }
+}
+
+const toggleClipMirror = (idx: number) => {
+  const clip = clips.value[idx]
+  if (!clip) return
+  clip.mirror = !clip.mirror
+  if (clip.crop) {
+    const vw = Math.max(16, props.mediaInfo.width)
+    const [cx, cy, cw, ch] = clip.crop
+    const newCx = Math.max(0, Math.min(vw - cw, vw - cx - cw))
+    clip.crop = [newCx, cy, cw, ch]
+  }
+  if (selectedClipIdx.value === idx) {
+    currentMirror.value = !!clip.mirror
+    if (clip.crop) currentCrop.value = [...clip.crop]
+  }
+  refreshThumbnail(clip)
+}
+
+
 const applyClipVisuals = (curClip: ClipItem) => {
+  currentMirror.value = !!curClip.mirror
   if (curClip.crop) {
     cropActive.value = true
     currentCrop.value = [...curClip.crop]
@@ -1455,6 +1539,7 @@ const addNewClip = () => {
     emoji: '',
     crop: cropActive.value && currentCrop.value ? [...currentCrop.value] : undefined,
     cropRadius: cropActive.value ? cropRadius.value : 0,
+    mirror: currentMirror.value,
   }
   clips.value.push(newClip)
   selectedClipIdx.value = clips.value.length - 1
@@ -1504,6 +1589,9 @@ const refreshThumbnail = (clip: ClipItem) => {
   if (clip.cropRadius && clip.cropRadius > 0.001) {
     url += `&radius=${clip.cropRadius}`
   }
+  if (clip.mirror) {
+    url += '&mirror=1'
+  }
   clipThumbnails.value[clip.id] = url
 }
 
@@ -1551,18 +1639,28 @@ const confirmClips = () => {
     }
   }
   const curClip = clips.value[selectedClipIdx.value]
-  if (curClip && cropActive.value && currentCrop.value) {
-    curClip.crop = [...currentCrop.value]
-    curClip.cropRadius = cropRadius.value
+  if (curClip) {
+    if (cropActive.value && currentCrop.value) {
+      curClip.crop = [...currentCrop.value]
+      curClip.cropRadius = cropRadius.value
+    }
+    curClip.mirror = currentMirror.value
   }
   emit('confirm', clips.value)
 }
 
 // Hotkey listener
 const onKeyDown = (e: KeyboardEvent) => {
-  if (!isVideo.value) return
   if (showClipSettings.value) return
   if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+
+  if (e.key === 'm' || e.key === 'M') {
+    e.preventDefault()
+    toggleMirror()
+    return
+  }
+
+  if (!isVideo.value) return
 
   if (e.code === 'Space') {
     e.preventDefault()

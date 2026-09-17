@@ -86,6 +86,7 @@ function sessionPayload() {
     end_time: t.endTime,
     crop: t.crop,
     crop_radius: t.cropRadius || 0,
+    mirror: !!t.mirror,
     clip_group_id: t.clipGroupId,
     clip_id: t.clipId,
     clip_label: t.clipLabel,
@@ -585,6 +586,7 @@ async function addImportedStickers(stickers: ImportedSticker[]) {
         endTime: item.end_time != null ? item.end_time : info.is_video ? defaultClipEnd(info.duration) : undefined,
         crop: item.crop,
         cropRadius: item.crop_radius,
+        mirror: !!item.mirror,
         clipGroupId: item.clip_group_id,
         clipId: item.clip_id,
         clipLabel: item.clip_label,
@@ -972,6 +974,7 @@ function openTaskClipModal(task: TaskItem) {
   activeClipTask.value = task
 }
 
+
 function clipGroupTasks(task: TaskItem): TaskItem[] {
   if (task.clipGroupId) {
     return tasks.value.filter((t) => t.clipGroupId === task.clipGroupId)
@@ -992,6 +995,7 @@ function taskToClipItem(task: TaskItem): ClipItem {
     keywords: task.keywords,
     crop: task.crop,
     cropRadius: task.cropRadius,
+    mirror: !!task.mirror,
   }
 }
 
@@ -1017,6 +1021,7 @@ function applyClipToTask(task: TaskItem, clip: ClipItem, groupId: string) {
   }
   task.crop = clip.crop
   task.cropRadius = clip.cropRadius
+  task.mirror = !!clip.mirror
   task.emoji = clip.emoji || task.emoji
   if (clip.keywords != null) task.keywords = clip.keywords
   task.clipGroupId = groupId
@@ -1040,6 +1045,7 @@ function createTaskFromClip(base: TaskItem, clip: ClipItem, groupId: string): Ta
     endTime: base.mediaInfo.is_video ? clip.endTime ?? undefined : undefined,
     crop: clip.crop,
     cropRadius: clip.cropRadius,
+    mirror: !!clip.mirror,
     clipGroupId: groupId,
     clipId: clip.id,
     status: 'waiting',
@@ -1118,6 +1124,9 @@ function getThumbnailUrl(task: TaskItem): string {
   }
   if (task.cropRadius && task.cropRadius > 0.001) {
     url += `&radius=${task.cropRadius}`
+  }
+  if (task.mirror) {
+    url += '&mirror=1'
   }
   return url
 }
@@ -1255,6 +1264,7 @@ async function startConversion() {
     end_time: t.endTime,
     crop: t.crop,
     crop_radius: t.cropRadius || 0,
+    mirror: !!t.mirror,
   }))
 
   try {
@@ -1329,6 +1339,7 @@ async function exportStickerList(mode: 'list' | 'sources') {
     end_time: t.endTime,
     crop: t.crop,
     crop_radius: t.cropRadius || 0,
+    mirror: !!t.mirror,
     clip_group_id: t.clipGroupId,
     clip_id: t.clipId,
     clip_label: t.clipLabel,
@@ -1643,10 +1654,13 @@ async function triggerAiTagAll() {
                           {{ task.mediaInfo.file_name }}
                         </div>
                         <div
-                          v-if="task.clipLabel || task.crop || (task.cropRadius && task.cropRadius > 0.001)"
+                          v-if="task.clipLabel || task.crop || (task.cropRadius && task.cropRadius > 0.001) || task.mirror"
                           class="flex items-center gap-1.5 text-[11px] font-mono text-[#2eb5f7]"
                         >
                           <span v-if="task.clipLabel">{{ task.clipLabel }}</span>
+                          <span v-if="task.mirror" class="text-amber-400 font-sans text-[10px] bg-amber-950/60 px-1 rounded border border-amber-800/40">
+                            🪞 镜像
+                          </span>
                           <span v-if="task.crop" class="text-emerald-400 font-sans text-[10px]">
                             [✂️ {{ cropRadiusLabel(task.cropRadius) }} {{ task.crop[2] }}×{{ task.crop[3] }}]
                           </span>
@@ -2097,13 +2111,6 @@ async function triggerAiTagAll() {
 
       <template v-else>
         <button
-          @click="openTaskClipModal(contextMenu.task!); contextMenu.visible = false"
-          class="w-full text-left px-3 py-2 rounded-lg hover:bg-[#24a1de] hover:text-white flex items-center gap-2 transition cursor-pointer"
-        >
-          {{ contextMenu.task.mediaInfo.is_video ? '✂️ 截取与裁切' : '✂️ 裁切画面' }}
-        </button>
-
-        <button
           @click="aiTagSingle(contextMenu.task!); contextMenu.visible = false"
           class="w-full text-left px-3 py-2 rounded-lg hover:bg-[#24a1de] hover:text-white flex items-center gap-2 transition cursor-pointer"
         >
@@ -2163,6 +2170,7 @@ async function triggerAiTagAll() {
       :initial-end-time="activeClipTask.endTime"
       :initial-crop="activeClipTask.crop"
       :initial-crop-radius="activeClipTask.cropRadius"
+      :initial-mirror="activeClipTask.mirror"
       :initial-emoji="activeClipTask.emoji"
       :initial-clips="clipModalClips"
       :initial-clip-index="clipModalFocusIdx"

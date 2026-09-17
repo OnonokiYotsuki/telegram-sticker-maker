@@ -60,3 +60,20 @@ def test_encode_multiple_clips_from_same_video(sample_video, tmp_path):
     # Both clips exist independently and are within 256KB
     assert os.path.getsize(out1) <= 256 * 1024
     assert os.path.getsize(out2) <= 256 * 1024
+
+
+def test_encode_video_clip_with_mirror(sample_video, tmp_path):
+    out_clip = str(tmp_path / "clip_mirrored.webm")
+    options = EncodeOptions(
+        preset_style="fast",
+        start_time=1.0,
+        end_time=3.0,
+        crop=(50, 50, 300, 300),
+        mirror=True,
+    )
+    success = StickerEncoder.convert(sample_video, out_clip, options)
+    assert success is True
+    assert os.path.exists(out_clip)
+    assert 0 < os.path.getsize(out_clip) <= 256 * 1024
+    info = MediaAnalyzer.analyze(out_clip)
+    assert max(info.width, info.height) == 512

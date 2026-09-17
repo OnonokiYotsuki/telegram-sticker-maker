@@ -8,7 +8,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
-from PIL import Image
+from PIL import Image, ImageOps
 
 from core.crop_shape import apply_crop_radius, normalize_crop_radius, radius_needs_alpha
 from core.proc import ffmpeg_bin, popen_hidden, run_hidden
@@ -289,12 +289,14 @@ class LocalStreamHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 pass
         radius = normalize_crop_radius(params.get("radius", [""])[0])
+        mirror_param = params.get("mirror", ["0"])[0].strip().lower()
+        mirror = mirror_param in ("1", "true", "yes")
 
         try:
             mtime = os.path.getmtime(file_path)
         except OSError:
             mtime = 0.0
-        cache_key = (file_path, round(ts, 3), size, crop, round(radius, 3))
+        cache_key = (file_path, round(ts, 3), size, crop, round(radius, 3), mirror)
         cached = _thumb_cache_get(cache_key, mtime)
         if cached is not None:
             self._send_png(cached)
@@ -305,12 +307,14 @@ class LocalStreamHandler(BaseHTTPRequestHandler):
 
         pil_img = None
         if is_video:
-            pil_img = _grab_video_frame(file_path, ts, size, crop)
+            pil_img = _grab_video_frame(file_path, ts, size, crop, mirror)
             crop = None
         else:
             try:
                 with Image.open(file_path) as im:
                     pil_img = im.convert("RGBA")
+                    if mirror:
+                        pil_img = ImageOps.mirror(pil_img)
             except (OSError, ValueError):
                 pass
 
@@ -366,9 +370,12 @@ def _grab_video_frame(
     ts: float,
     size: int,
     crop: tuple[int, int, int, int] | None,
+    mirror: bool = False,
 ) -> Image.Image | None:
     """Decode one frame, crop/scale inside ffmpeg. Never raises."""
     filters = []
+    if mirror:
+        filters.append("hflip")
     if crop is not None:
         cx, cy, cw, ch = crop
         cw = max(2, cw)

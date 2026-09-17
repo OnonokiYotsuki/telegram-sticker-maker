@@ -671,3 +671,26 @@ def test_import_skips_missing_and_rejects_empty(tmp_path):
     )
     with pytest.raises(StickerListError, match="没有可导入的贴纸文件"):
         import_sticker_bundle(str(dest))
+
+
+def test_sticker_list_mirror_preservation(tmp_path):
+    src = tmp_path / "clip.mp4"
+    src.write_bytes(b"dummy")
+    stickers = [
+        {
+            "input_path": str(src),
+            "emoji": "🪞",
+            "is_video": True,
+            "crop": [0, 0, 100, 100],
+            "crop_radius": 0.5,
+            "mirror": True,
+        }
+    ]
+    json_path = tmp_path / "list.json"
+    write_sticker_list(str(json_path), stickers)
+
+    imported = import_sticker_bundle(str(json_path))
+    assert imported["count"] == 1
+    assert len(imported["stickers"]) == 1
+    item = imported["stickers"][0]
+    assert item.get("mirror") is True
