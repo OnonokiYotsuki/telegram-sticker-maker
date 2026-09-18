@@ -8,8 +8,8 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, fields
 from subprocess import TimeoutExpired
-from typing import Optional, Tuple
-from PIL import Image
+from typing import List, Optional, Tuple, Union
+from PIL import Image, ImageOps
 
 from core.proc import ffmpeg_bin, run_hidden
 
@@ -159,17 +159,61 @@ class AIEmojiTagger:
         return base64.b64encode(buf.getvalue()).decode("utf-8")
 
     @classmethod
+    def _apply_frame_transforms(
+        cls,
+        img: Image.Image,
+        crop: Optional[Union[Tuple[int, int, int, int], List[int]]] = None,
+        crop_radius: float = 0.0,
+        mirror: bool = False,
+    ) -> Image.Image:
+        """
+        Applies mirror, crop, and crop_radius transforms to match sticker output.
+        """
+        from core.crop_shape import apply_crop_radius, normalize_crop_radius
+
+        try:
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass
+
+        if mirror:
+            img = ImageOps.mirror(img)
+
+        if crop and len(crop) == 4:
+            try:
+                cx, cy, cw, ch = [int(v) for v in crop]
+                if cw > 0 and ch > 0:
+                    w, h = img.size
+                    right = min(w, max(0, cx + cw))
+                    bottom = min(h, max(0, cy + ch))
+                    left = min(max(0, cx), max(0, right - 1))
+                    top = min(max(0, cy), max(0, bottom - 1))
+                    if right > left and bottom > top:
+                        img = img.crop((left, top, right, bottom))
+            except (TypeError, ValueError):
+                pass
+
+        if normalize_crop_radius(crop_radius) > 0.001:
+            img = apply_crop_radius(img, crop_radius)
+
+        return img
+
+    @classmethod
     def extract_frame_base64(
         cls,
         file_path: str,
         max_dim: int = 256,
         start_time: Optional[float] = None,
         end_time: Optional[float] = None,
+        crop: Optional[Union[Tuple[int, int, int, int], List[int]]] = None,
+        crop_radius: float = 0.0,
+        mirror: bool = False,
     ) -> Optional[str]:
         """
         Extracts a lightweight base64 JPEG from an image, animated image, or video file.
         For animated images and videos, extracts representative frames across the timeline
         and stitches them into a multi-frame storyboard to capture emotion and action progression.
+        Applies crop, mirror, and crop_radius if specified so only the sticker area is analyzed.
         """
         if not os.path.exists(file_path):
             return None
@@ -225,7 +269,11 @@ class AIEmojiTagger:
                     ]
                     res = run_hidden(cmd, timeout=5)
                     if res.returncode == 0 and res.stdout:
-                        frames.append(Image.open(io.BytesIO(res.stdout)))
+                        frame = Image.open(io.BytesIO(res.stdout))
+                        frame = cls._apply_frame_transforms(
+                            frame, crop=crop, crop_radius=crop_radius, mirror=mirror
+                        )
+                        frames.append(frame)
                 except (OSError, TimeoutExpired, ValueError):
                     pass
 
@@ -254,10 +302,18 @@ class AIEmojiTagger:
                     frames = []
                     for idx in indices:
                         img.seek(idx)
-                        frames.append(img.copy())
+                        frame = img.copy()
+                        frame = cls._apply_frame_transforms(
+                            frame, crop=crop, crop_radius=crop_radius, mirror=mirror
+                        )
+                        frames.append(frame)
                     return cls._create_storyboard_base64(frames, max_dim)
                 else:
-                    return cls._img_to_base64(img, max_dim)
+                    frame = img.copy()
+                    frame = cls._apply_frame_transforms(
+                        frame, crop=crop, crop_radius=crop_radius, mirror=mirror
+                    )
+                    return cls._img_to_base64(frame, max_dim)
         except (OSError, ValueError):
             return None
 
@@ -282,6 +338,9 @@ class AIEmojiTagger:
         timeout: int = 25,
         start_time: Optional[float] = None,
         end_time: Optional[float] = None,
+        crop: Optional[Union[Tuple[int, int, int, int], List[int]]] = None,
+        crop_radius: float = 0.0,
+        mirror: bool = False,
     ) -> str:
         """
         Calls the vision completion endpoint to predict matching emojis.
@@ -293,7 +352,12 @@ class AIEmojiTagger:
             return ""
 
         b64_data = cls.extract_frame_base64(
-            file_path, start_time=start_time, end_time=end_time
+            file_path,
+            start_time=start_time,
+            end_time=end_time,
+            crop=crop,
+            crop_radius=crop_radius,
+            mirror=mirror,
         )
         if not b64_data:
             return ""

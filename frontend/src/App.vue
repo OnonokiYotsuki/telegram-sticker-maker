@@ -1361,7 +1361,10 @@ async function aiTagSingle(task: TaskItem) {
       task.taskId,
       task.inputPath,
       task.startTime,
-      task.endTime
+      task.endTime,
+      task.crop,
+      task.cropRadius,
+      task.mirror
     )
   }
 }
@@ -1539,6 +1542,9 @@ async function triggerAiTagAll() {
     input_path: t.inputPath,
     start_time: t.startTime,
     end_time: t.endTime,
+    crop: t.crop,
+    crop_radius: t.cropRadius || 0,
+    mirror: !!t.mirror,
   }))
   try {
     if (window.pywebview?.api?.ai_tag_all) {

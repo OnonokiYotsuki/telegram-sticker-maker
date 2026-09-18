@@ -142,7 +142,15 @@ export interface AppAPI {
     error?: string
   }>
   cancel_conversion: () => Promise<void>
-  ai_tag_single: (task_id: number, input_path: string, start_time?: number, end_time?: number) => Promise<{ status: string }>
+  ai_tag_single: (
+    task_id: number,
+    input_path: string,
+    start_time?: number,
+    end_time?: number,
+    crop?: [number, number, number, number],
+    crop_radius?: number,
+    mirror?: boolean,
+  ) => Promise<{ status: string }>
   ai_tag_all: (tasks: Record<string, unknown>[]) => Promise<{ status: string }>
 }
 

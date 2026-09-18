@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 import urllib.parse
 
 import webview
@@ -296,10 +296,13 @@ class AppAPI:
         input_path: str,
         start_time: Optional[float] = None,
         end_time: Optional[float] = None,
+        crop: Optional[Union[List[int], Tuple[int, int, int, int]]] = None,
+        crop_radius: float = 0.0,
+        mirror: bool = False,
     ):
         threading.Thread(
             target=self._run_ai_single_worker,
-            args=(task_id, input_path, start_time, end_time),
+            args=(task_id, input_path, start_time, end_time, crop, crop_radius, mirror),
             daemon=True,
         ).start()
         return {"status": "started"}
@@ -310,13 +313,22 @@ class AppAPI:
         in_path: str,
         start_time: Optional[float] = None,
         end_time: Optional[float] = None,
+        crop: Optional[Union[List[int], Tuple[int, int, int, int]]] = None,
+        crop_radius: float = 0.0,
+        mirror: bool = False,
     ):
         config = AIEmojiConfig.load()
         fname = os.path.basename(in_path)
         self._emit("onAiItemStarted", task_id, fname)
         try:
             emoji = AIEmojiTagger.predict_emoji(
-                in_path, config, start_time=start_time, end_time=end_time
+                in_path,
+                config,
+                start_time=start_time,
+                end_time=end_time,
+                crop=crop,
+                crop_radius=crop_radius,
+                mirror=mirror,
             )
             self._log(f"[AI Emoji] {fname} -> {emoji or '无匹配'}")
             self._emit("onAiItemFinished", task_id, emoji)
@@ -931,11 +943,20 @@ class AppAPI:
             in_path = t.get("input_path", "")
             start_t = t.get("start_time")
             end_t = t.get("end_time")
+            crop = t.get("crop")
+            crop_radius = t.get("crop_radius") or 0.0
+            mirror = bool(t.get("mirror", False))
             fname = os.path.basename(in_path)
             self._emit("onAiItemStarted", tid, fname)
             try:
                 emoji = AIEmojiTagger.predict_emoji(
-                    in_path, config, start_time=start_t, end_time=end_t
+                    in_path,
+                    config,
+                    start_time=start_t,
+                    end_time=end_t,
+                    crop=crop,
+                    crop_radius=crop_radius,
+                    mirror=mirror,
                 )
                 self._log(f"[AI Emoji] {fname} -> {emoji or '无匹配'}")
                 self._emit("onAiItemFinished", tid, emoji)

@@ -248,26 +248,54 @@ def test_app_api_ai_workers(monkeypatch):
     monkeypatch.setattr(api, "_log", lambda m: logs.append(m))
 
     called_predict = []
-    def mock_predict(path, config, max_retries=2, timeout=25, start_time=None, end_time=None):
-        called_predict.append((path, start_time, end_time))
+    def mock_predict(
+        path,
+        config,
+        max_retries=2,
+        timeout=25,
+        start_time=None,
+        end_time=None,
+        crop=None,
+        crop_radius=0.0,
+        mirror=False,
+    ):
+        called_predict.append((path, start_time, end_time, crop, crop_radius, mirror))
         return "🐱"
 
     monkeypatch.setattr("server.api.AIEmojiTagger.predict_emoji", mock_predict)
 
     # Test single worker
-    api._run_ai_single_worker(1, "cat.png", start_time=0.5, end_time=2.5)
+    api._run_ai_single_worker(
+        1,
+        "cat.png",
+        start_time=0.5,
+        end_time=2.5,
+        crop=[10, 10, 50, 50],
+        crop_radius=0.5,
+        mirror=True,
+    )
     assert len(called_predict) == 1
-    assert called_predict[0] == ("cat.png", 0.5, 2.5)
+    assert called_predict[0] == ("cat.png", 0.5, 2.5, [10, 10, 50, 50], 0.5, True)
     assert any("onAiItemFinished(1, \"🐱\")" in c for c in js_calls)
 
     # Test batch worker
     called_predict.clear()
     tasks = [
-        {"task_id": 10, "input_path": "dog.png", "start_time": 0.0, "end_time": 1.0},
+        {
+            "task_id": 10,
+            "input_path": "dog.png",
+            "start_time": 0.0,
+            "end_time": 1.0,
+            "crop": [0, 0, 100, 100],
+            "crop_radius": 1.0,
+            "mirror": False,
+        },
         {"task_id": 11, "input_path": "lol.mp4"},
     ]
     api._run_ai_worker(tasks)
     assert len(called_predict) == 2
+    assert called_predict[0] == ("dog.png", 0.0, 1.0, [0, 0, 100, 100], 1.0, False)
+    assert called_predict[1] == ("lol.mp4", None, None, None, 0.0, False)
     assert any("onAiItemFinished(10, \"🐱\")" in c for c in js_calls)
     assert any("onAiItemFinished(11, \"🐱\")" in c for c in js_calls)
     assert any("onAiAllCompleted()" in c for c in js_calls)

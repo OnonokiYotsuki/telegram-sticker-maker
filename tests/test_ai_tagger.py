@@ -124,3 +124,133 @@ def test_config_ignores_unknown_keys(tmp_path, monkeypatch):
     loaded = AIEmojiConfig.load()
     assert loaded.api_key == "k"
     assert loaded.model == "x"
+
+
+def test_extract_frame_with_crop(tmp_path):
+    import base64
+    import io
+
+    # 1. Create a 200x200 image where:
+    # Left half (0..99) is Red (255, 0, 0)
+    # Right half (100..199) is Blue (0, 0, 255)
+    img_path = str(tmp_path / "split.png")
+    img = Image.new("RGBA", (200, 200), (255, 0, 0, 255))
+    blue_block = Image.new("RGBA", (100, 200), (0, 0, 255, 255))
+    img.paste(blue_block, (100, 0))
+    img.save(img_path)
+
+    # Crop the right half (blue side only)
+    b64 = AIEmojiTagger.extract_frame_base64(img_path, crop=[100, 0, 100, 200], max_dim=256)
+    assert b64 is not None
+    decoded = Image.open(io.BytesIO(base64.b64decode(b64)))
+    # Width and height of the decoded image should preserve aspect ratio of the crop (100x200)
+    assert decoded.width < decoded.height
+    # The center pixel should be blue (not red)
+    center_color = decoded.getpixel((decoded.width // 2, decoded.height // 2))
+    assert center_color[0] < 50 and center_color[2] > 200
+
+
+def test_extract_frame_with_mirror_and_crop(tmp_path):
+    import base64
+    import io
+
+    # Left half is Red, Right half is Blue
+    img_path = str(tmp_path / "split_mirror.png")
+    img = Image.new("RGBA", (200, 200), (255, 0, 0, 255))
+    blue_block = Image.new("RGBA", (100, 200), (0, 0, 255, 255))
+    img.paste(blue_block, (100, 0))
+    img.save(img_path)
+
+    # Mirror first: blue flips to left half (0..100)
+    # Then crop left half (0, 0, 100, 200)
+    b64 = AIEmojiTagger.extract_frame_base64(
+        img_path, crop=[0, 0, 100, 200], mirror=True, max_dim=256
+    )
+    assert b64 is not None
+    decoded = Image.open(io.BytesIO(base64.b64decode(b64)))
+    center_color = decoded.getpixel((decoded.width // 2, decoded.height // 2))
+    # Due to mirror, left half is now blue!
+    assert center_color[0] < 50 and center_color[2] > 200
+
+
+def test_extract_frame_with_crop_radius(tmp_path):
+    import base64
+    import io
+
+    # Solid red square (100x100)
+    img_path = str(tmp_path / "circle.png")
+    img = Image.new("RGBA", (100, 100), (255, 0, 0, 255))
+    img.save(img_path)
+
+    # Crop to circle (crop_radius=1.0)
+    b64 = AIEmojiTagger.extract_frame_base64(
+        img_path, crop=[0, 0, 100, 100], crop_radius=1.0, max_dim=256
+    )
+    assert b64 is not None
+    decoded = Image.open(io.BytesIO(base64.b64decode(b64)))
+    # Corner pixel (0, 0) should be white (masked out and pasted on white bg)
+    corner = decoded.getpixel((0, 0))
+    assert corner[0] > 240 and corner[1] > 240 and corner[2] > 240
+    # Center pixel should still be red
+    center = decoded.getpixel((decoded.width // 2, decoded.height // 2))
+    assert center[0] > 200 and center[1] < 50
+
+
+def test_predict_emoji_passes_crop_params(monkeypatch):
+    called = {}
+    def mock_extract(file_path, max_dim=256, start_time=None, end_time=None, crop=None, crop_radius=0.0, mirror=False):
+        called["crop"] = crop
+        called["crop_radius"] = crop_radius
+        called["mirror"] = mirror
+        return "fake_b64"
+
+    monkeypatch.setattr(AIEmojiTagger, "extract_frame_base64", classmethod(lambda cls, *a, **kw: mock_extract(*a, **kw)))
+
+    cfg = AIEmojiConfig(api_key="sk-test", base_url="https://api.openai.com/v1")
+    AIEmojiTagger.predict_emoji(
+        "dummy.png",
+        cfg,
+        start_time=1.0,
+        end_time=3.0,
+        crop=[10, 20, 30, 40],
+        crop_radius=0.8,
+        mirror=True,
+    )
+    assert called["crop"] == [10, 20, 30, 40]
+    assert called["crop_radius"] == 0.8
+    assert called["mirror"] is True
+
+
+def test_extract_video_frame_with_crop(tmp_path):
+    import subprocess
+    import base64
+    import io
+    from core.proc import ffmpeg_bin
+
+    try:
+        ffmpeg = ffmpeg_bin()
+    except FileNotFoundError:
+        pytest.skip("ffmpeg not available")
+
+    vpath = str(tmp_path / "test_video.mp4")
+    cmd = [
+        ffmpeg, "-y",
+        "-f", "lavfi",
+        "-i", "testsrc=duration=2:size=320x240:rate=24",
+        "-c:v", "libx264",
+        "-pix_fmt", "yuv420p",
+        vpath,
+    ]
+    subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+
+    b64 = AIEmojiTagger.extract_frame_base64(
+        vpath,
+        start_time=0.0,
+        end_time=1.0,
+        crop=[0, 0, 100, 100],
+        crop_radius=0.0,
+        max_dim=256,
+    )
+    assert b64 is not None
+    decoded = Image.open(io.BytesIO(base64.b64decode(b64)))
+    assert decoded.width > 0 and decoded.height > 0
