@@ -112,6 +112,7 @@
                 >
                   片段 {{ formatTime(selectedClip.startTime) }} – {{ clipHasEnd(selectedClip) ? formatTime(selectedClip.endTime) : '未设终点' }}
                   <span v-if="clipHasEnd(selectedClip)" class="text-slate-500">({{ (selectedClip.endTime! - selectedClip.startTime).toFixed(2) }}s)</span>
+                  <span v-if="selectedClip.emoji" class="text-amber-300 ml-1 font-sans">({{ selectedClip.emoji }})</span>
                 </span>
                 <span class="text-slate-500 text-right flex items-center justify-end gap-1.5 shrink-0">
                   <button
@@ -271,6 +272,25 @@
                 >
                   <span>🪞 镜像</span>
                 </button>
+
+                <div class="h-4 w-px bg-slate-700 mx-1" />
+
+                <!-- Emoji setting for image -->
+                <div
+                  class="flex items-center space-x-1.5 bg-[#12141a] border border-[#2b3040] rounded px-2 py-1 text-xs"
+                  :class="!hasSelectedClip ? 'opacity-40 cursor-not-allowed' : ''"
+                >
+                  <span class="text-slate-400 text-xs font-semibold whitespace-nowrap">关联 Emoji:</span>
+                  <input
+                    type="text"
+                    :disabled="!hasSelectedClip"
+                    :value="selectedClip?.emoji || ''"
+                    @input="onSelectedClipEmojiInput(($event.target as HTMLInputElement).value)"
+                    placeholder="未设置"
+                    title="设置此贴纸的关联 Emoji"
+                    class="w-20 bg-transparent text-slate-200 placeholder:text-slate-600 focus:outline-none text-xs text-center font-sans disabled:cursor-not-allowed"
+                  />
+                </div>
               </div>
               <button
                 @click="showClipSettings = true"
@@ -380,6 +400,25 @@
                 >
                   <span>🪞 镜像</span>
                 </button>
+
+                <div class="h-4 w-px bg-slate-700 mx-1" />
+
+                <!-- Current clip emoji setting -->
+                <div
+                  class="flex items-center space-x-1.5 bg-[#12141a] border border-[#2b3040] rounded px-2 py-1 text-xs"
+                  :class="!hasSelectedClip ? 'opacity-40 cursor-not-allowed' : ''"
+                >
+                  <span class="text-slate-400 text-xs font-semibold whitespace-nowrap">关联 Emoji:</span>
+                  <input
+                    type="text"
+                    :disabled="!hasSelectedClip"
+                    :value="selectedClip?.emoji || ''"
+                    @input="onSelectedClipEmojiInput(($event.target as HTMLInputElement).value)"
+                    placeholder="未设置"
+                    title="设置当前选中片段的关联 Emoji"
+                    class="w-16 bg-transparent text-slate-200 placeholder:text-slate-600 focus:outline-none text-xs text-center font-sans disabled:cursor-not-allowed"
+                  />
+                </div>
               </div>
 
               <div class="flex items-center shrink-0">
@@ -543,6 +582,7 @@
                     type="text"
                     :value="formatTime(clip.startTime)"
                     @change="onClipStartChange(idx, ($event.target as HTMLInputElement).value)"
+                    title="起始时间"
                     class="w-16 bg-[#11131a] border border-[#2b3040] rounded px-1 text-center text-slate-200 focus:border-sky-500 outline-none text-[11px]"
                   />
                   <span class="text-slate-500">-</span>
@@ -551,11 +591,27 @@
                     :value="clip.endTime == null ? '' : formatTime(clip.endTime)"
                     placeholder="终点"
                     @change="onClipEndChange(idx, $event)"
+                    title="结束时间"
                     class="w-16 bg-[#11131a] border border-[#2b3040] rounded px-1 text-center text-slate-200 placeholder:text-slate-600 focus:border-sky-500 outline-none text-[11px]"
+                  />
+                  <input
+                    type="text"
+                    v-model="clip.emoji"
+                    placeholder="Emoji"
+                    title="关联 Emoji（如 😂、🐱）"
+                    @click.stop="selectClip(idx)"
+                    class="flex-1 min-w-[3.4rem] bg-[#11131a] border border-[#2b3040] rounded px-1.5 py-0.5 text-center text-slate-200 placeholder:text-slate-600 focus:border-sky-500 outline-none text-[11px] font-sans"
                   />
                 </div>
                 <div class="text-[11px] text-slate-400 flex items-center flex-wrap gap-1.5">
                   <span class="font-semibold text-slate-300">{{ clipDurationLabel(clip) }}</span>
+                  <span
+                    v-if="clip.emoji"
+                    class="text-amber-300 font-sans text-[10px] bg-amber-950/60 px-1.5 py-0.5 rounded border border-amber-800/40 truncate max-w-[80px]"
+                    :title="`关联 Emoji: ${clip.emoji}`"
+                  >
+                    {{ clip.emoji }}
+                  </span>
                   <span v-if="clip.mirror" class="text-amber-400 font-mono text-[10px] bg-amber-950/60 px-1 rounded border border-amber-800/40">
                     🪞 镜像
                   </span>
@@ -1101,10 +1157,11 @@ let proxyPollTimer: ReturnType<typeof setTimeout> | null = null
 let pendingProxySeek: number | null = null
 
 const nativeRangeSeek = computed(() => !needsProxyFile.value || proxyReady.value)
-const streamOffset = ref(0)
+const streamOffset = ref(focusedInit ? focusedInit.startTime : 0)
 const streamReloadNonce = ref(0)
 const isReloading = ref(false)
 const pendingPlay = ref(false)
+let initialSeekDone = false
 let queuedServerSeek: number | null = null
 let serverSeekTimer: ReturnType<typeof setTimeout> | null = null
 let clockRaf = 0
@@ -1413,13 +1470,13 @@ const onLoadedMetadata = () => {
   if (!videoRef.value) return
   videoRef.value.volume = 0.5
   applyPlaybackRate()
-  const t = clips.value[selectedClipIdx.value]?.startTime
-  if (t == null) return
-  if (nativeRangeSeek.value) {
-    videoRef.value.currentTime = t
-    currentTime.value = t
-  } else if (t > 0.001) {
-    seekTo(t)
+  if (nativeRangeSeek.value && !initialSeekDone) {
+    const t = clips.value[selectedClipIdx.value]?.startTime ?? currentTime.value
+    if (t != null) {
+      initialSeekDone = true
+      videoRef.value.currentTime = t
+      currentTime.value = t
+    }
   }
 }
 
@@ -1614,6 +1671,11 @@ const deleteClipFromMenu = () => {
   if (idx >= 0 && idx < clips.value.length) {
     deleteClip(idx)
   }
+}
+
+const onSelectedClipEmojiInput = (val: string) => {
+  const clip = selectedClip.value
+  if (clip) clip.emoji = val
 }
 
 
@@ -1909,12 +1971,18 @@ const checkProxyStatus = async (start = false) => {
       proxyError.value = data.error || '代理生成失败'
       return
     }
-    if (data.status === 'generating' || start) {
+    if (data.status === 'generating') {
       proxyLoading.value = true
-      proxyProgress.value = Math.min(99, Math.round((data.progress || 0) * 100))
-      proxyPollTimer = setTimeout(() => checkProxyStatus(false), 150)
-    } else if (proxyLoading.value) {
+      const pct = (data.progress || 0) * 100
+      proxyProgress.value = pct > 0 ? Math.max(1, Math.min(99, Math.round(pct))) : 0
       proxyPollTimer = setTimeout(() => checkProxyStatus(false), 200)
+    } else if (start || proxyLoading.value) {
+      proxyLoading.value = true
+      if (data.status === 'not_started' && proxyLoading.value) {
+        proxyPollTimer = setTimeout(() => checkProxyStatus(true), 300)
+      } else {
+        proxyPollTimer = setTimeout(() => checkProxyStatus(false), 200)
+      }
     }
   } catch {
     if (proxyLoading.value) {

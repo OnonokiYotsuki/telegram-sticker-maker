@@ -167,9 +167,19 @@ class LocalStreamHandler(BaseHTTPRequestHandler):
         with open(file_path, "rb") as f:
             self._copyfile(f)
 
+    def _resolve_path(self, raw_path: str) -> str:
+        if not raw_path:
+            return ""
+        if os.path.isfile(raw_path):
+            return os.path.abspath(raw_path)
+        unquoted = unquote(raw_path)
+        if os.path.isfile(unquoted):
+            return os.path.abspath(unquoted)
+        return os.path.abspath(raw_path)
+
     def _handle_proxy_status(self, params):
         raw_path = params.get("path", [""])[0]
-        file_path = unquote(raw_path)
+        file_path = self._resolve_path(raw_path)
         if not file_path or not os.path.isfile(file_path):
             self.send_error(404, f"File not found: {file_path}")
             return
@@ -196,7 +206,7 @@ class LocalStreamHandler(BaseHTTPRequestHandler):
 
     def _handle_stream(self, params):
         raw_path = params.get("path", [""])[0]
-        file_path = unquote(raw_path)
+        file_path = self._resolve_path(raw_path)
 
         if not file_path or not os.path.isfile(file_path):
             self.send_error(404, f"File not found: {file_path}")
@@ -266,7 +276,7 @@ class LocalStreamHandler(BaseHTTPRequestHandler):
 
     def _handle_thumbnail(self, params):
         raw_path = params.get("path", [""])[0]
-        file_path = unquote(raw_path)
+        file_path = self._resolve_path(raw_path)
         if not file_path or not os.path.isfile(file_path):
             self.send_error(404, "File not found")
             return

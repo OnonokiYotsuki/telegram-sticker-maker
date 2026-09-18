@@ -96,3 +96,20 @@ def test_install_proxy_file_keys_to_new_path(tmp_path):
     finally:
         reset_proxy_manager()
         set_proxy_cache_dir(None)
+
+
+def test_proxy_path_casing_normalization(tmp_path):
+    set_proxy_cache_dir(str(tmp_path / "proxies"))
+    reset_proxy_manager()
+    try:
+        mkv = str(tmp_path / "src.mkv")
+        _make_mkv(mkv)
+        pm = get_proxy_manager()
+        pm.ensure_proxy_async(mkv.upper() if os.name == "nt" else mkv)
+        query_path = mkv.lower() if os.name == "nt" else mkv
+        st = pm.get_proxy_status(query_path)
+        assert st.status in ("generating", "ready")
+    finally:
+        reset_proxy_manager()
+        set_proxy_cache_dir(None)
+

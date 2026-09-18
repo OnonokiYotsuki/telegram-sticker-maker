@@ -1079,7 +1079,9 @@ function applyClipToTask(task: TaskItem, clip: ClipItem, groupId: string) {
   task.crop = clip.crop
   task.cropRadius = clip.cropRadius
   task.mirror = !!clip.mirror
-  task.emoji = clip.emoji || task.emoji
+  if (clip.emoji !== undefined) {
+    task.emoji = clip.emoji
+  }
   if (clip.keywords != null) task.keywords = clip.keywords
   task.clipGroupId = groupId
   task.clipId = clip.id
@@ -1092,7 +1094,7 @@ function createTaskFromClip(base: TaskItem, clip: ClipItem, groupId: string): Ta
     inputPath: base.inputPath,
     outputPath: '',
     mediaInfo: base.mediaInfo,
-    emoji: clip.emoji || base.emoji,
+    emoji: clip.emoji !== undefined ? clip.emoji : (base.emoji || ''),
     keywords: clip.keywords ?? base.keywords ?? '',
     index: 0,
     clipLabel: base.mediaInfo.is_video && clip.endTime != null

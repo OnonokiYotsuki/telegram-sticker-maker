@@ -38,13 +38,17 @@ def set_proxy_cache_dir(path: Optional[str]) -> None:
         _PROXY_CACHE_DIR = None
 
 
+def canonical_media_path(file_path: str) -> str:
+    return os.path.normcase(os.path.abspath(file_path))
+
+
 def needs_proxy(file_path: str) -> bool:
     ext = os.path.splitext(file_path)[1].lower()
     return ext not in _RANGE_STREAM_EXTS
 
 
 def compute_file_cache_key(file_path: str) -> str:
-    abs_path = os.path.abspath(file_path)
+    abs_path = canonical_media_path(file_path)
     try:
         mtime = os.path.getmtime(abs_path)
         size = os.path.getsize(abs_path)
@@ -133,9 +137,9 @@ class ProxyManager:
         if os.path.isfile(proxy_path) and os.path.getsize(proxy_path) > 1024:
             return ProxyTask(status="ready", progress=1.0, proxy_path=proxy_path)
 
-        abs_path = os.path.abspath(file_path)
+        key = canonical_media_path(file_path)
         with self._lock:
-            task = self._tasks.get(abs_path)
+            task = self._tasks.get(key)
             if task is not None:
                 return ProxyTask(
                     status=task.status,
@@ -153,17 +157,17 @@ class ProxyManager:
         if os.path.isfile(proxy_path) and os.path.getsize(proxy_path) > 1024:
             return ProxyTask(status="ready", progress=1.0, proxy_path=proxy_path)
 
-        abs_path = os.path.abspath(file_path)
+        key = canonical_media_path(file_path)
         with self._lock:
-            existing = self._tasks.get(abs_path)
+            existing = self._tasks.get(key)
             if existing and existing.status == "generating":
                 return existing
             task = ProxyTask(status="generating", progress=0.0)
-            self._tasks[abs_path] = task
+            self._tasks[key] = task
 
         thread = threading.Thread(
             target=self._generate_worker,
-            args=(abs_path, proxy_path, task),
+            args=(os.path.abspath(file_path), proxy_path, task),
             daemon=True,
         )
         thread.start()
@@ -195,9 +199,9 @@ class ProxyManager:
             os.utime(dest_abs, None)
         if not os.path.isfile(dest_abs) or os.path.getsize(dest_abs) <= 1024:
             return False
-        abs_media = os.path.abspath(file_path)
+        key = canonical_media_path(file_path)
         with self._lock:
-            self._tasks[abs_media] = ProxyTask(
+            self._tasks[key] = ProxyTask(
                 status="ready",
                 progress=1.0,
                 proxy_path=dest_abs,
@@ -335,7 +339,7 @@ class ProxyManager:
                     pass
         finally:
             with self._lock:
-                self._procs.pop(file_path, None)
+                self._procs.pop(canonical_media_path(file_path), None)
 
     def _build_transcode_cmd(
         self,
@@ -381,7 +385,7 @@ class ProxyManager:
     ) -> bool:
         proc = popen_hidden(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         with self._lock:
-            self._procs[file_path] = proc
+            self._procs[canonical_media_path(file_path)] = proc
 
         err_output: List[str] = []
 
@@ -405,6 +409,13 @@ class ProxyManager:
                     try:
                         us = int(decoded.split("=")[1])
                         sec = us / 1_000_000.0
+                        task.progress = min(0.99, max(0.0, sec / duration))
+                    except (ValueError, IndexError):
+                        pass
+                elif decoded.startswith("out_time_ms="):
+                    try:
+                        ms = int(decoded.split("=")[1])
+                        sec = ms / 1_000.0
                         task.progress = min(0.99, max(0.0, sec / duration))
                     except (ValueError, IndexError):
                         pass
